@@ -2,6 +2,7 @@ import type { Booking, Court, Incident, MergeRequest, Role } from '../types'
 
 /** 演示用"当前时间"：晚间黄金时段，照明已开，多个场次并行，冲突丰富 */
 export const TODAY = '2026-09-27'
+export const TOMORROW = '2026-09-28'
 export const NOW_HM = '19:42'
 
 export const ROLES: Role[] = [
@@ -56,6 +57,22 @@ export const COURTS: Court[] = [
     lighting: { available: true, pricePerMinute: 1.0, autoOnHour: 18, deposit: 50, status: 'ok' },
     distanceM: 1200,
     sealed: false
+  },
+  {
+    id: 'court-4',
+    name: '滨江体育中心 · 室内篮球馆',
+    park: '滨江体育中心',
+    halfCourts: 2,
+    surface: 'good',
+    hoops: { H1: 'normal', H2: 'normal' },
+    noiseSensitive: [],
+    noiseCurfew: 23,
+    lockersTotal: 30,
+    lockersFree: 18,
+    lighting: { available: true, pricePerMinute: 1.2, autoOnHour: 8, deposit: 50, status: 'ok' },
+    distanceM: 900,
+    sealed: false,
+    indoor: true
   }
 ]
 
@@ -454,6 +471,80 @@ export const BOOKINGS: Booking[] = [
       { at: '15:20', text: '队长点击"结束使用并关灯"，按实际 50 分钟结算', tone: 'success' },
       { at: '15:22', text: '押金 50 元扣除照明 40 元，退回 10 元（1–3 工作日到账）', tone: 'success' }
     ]
+  },
+  {
+    id: 'B011',
+    code: '552764',
+    courtId: 'court-3',
+    halves: ['H3'],
+    scope: 'half',
+    date: TODAY,
+    start: '19:00',
+    end: '21:00',
+    actualStart: '19:10',
+    headcount: 7,
+    acceptMerge: true,
+    teamName: '晨光队·二阵',
+    captainId: 'u-chen',
+    captainName: '陈晨',
+    captainPhone: '138****0001',
+    fixedTeam: true,
+    credit: 92,
+    status: 'ongoing',
+    payStatus: 'depositPaid',
+    checkInCode: '552764',
+    lighting: { enabled: true, onAt: '19:12', minutes: 0, fee: 0, deposit: 50 },
+    fees: [
+      { kind: 'lighting', label: '照明费（实时累计，拼场按人均分摊）', amount: 0, ruleId: 'R-LIGHT-1' }
+    ],
+    members: [
+      { id: 'm11-1', name: '陈晨', phone: '138****0001', isCaptain: true, checkedIn: false },
+      { id: 'm11-2', name: '刘洋', phone: '138****2102', isCaptain: false, checkedIn: true, checkInAt: '19:10' },
+      { id: 'm11-3', name: '陈果', phone: '138****2103', isCaptain: false, checkedIn: true, checkInAt: '19:14' },
+      { id: 'm11-4', name: '周舟', phone: '138****2104', isCaptain: false, checkedIn: true, checkInAt: '19:21' },
+      { id: 'm11-5', name: '吴悠', phone: '138****2105', isCaptain: false, checkedIn: true, checkInAt: '19:38' },
+      { id: 'm11-6', name: '林一', phone: '138****2106', isCaptain: false, checkedIn: false },
+      { id: 'm11-7', name: '王同学（拼场散客）', phone: '150****3321', isCaptain: false, checkedIn: false }
+    ],
+    timeline: [
+      { at: '09:40', text: '固定球队周预约成功（二阵 19:00–21:00 河滨 H3），预付照明押金 50 元', tone: 'success' },
+      { at: '19:10', text: '4 名队员陆续到场热身签到，照明开启（队长陈晨在 A 区场次结束后到场）', tone: 'success' },
+      { at: '19:20', text: '散客王同学拼场申请已通过，尚未到场', tone: 'info' }
+    ]
+  },
+  {
+    id: 'B012',
+    code: '883045',
+    courtId: 'court-3',
+    halves: ['H4'],
+    scope: 'half',
+    date: TODAY,
+    start: '19:00',
+    end: '21:00',
+    headcount: 5,
+    acceptMerge: false,
+    teamName: '清风队',
+    captainId: 'u-qin',
+    captainName: '秦风',
+    captainPhone: '135****6601',
+    fixedTeam: false,
+    credit: 97,
+    status: 'booked',
+    payStatus: 'depositPaid',
+    checkInCode: '883045',
+    lighting: { enabled: false, minutes: 0, fee: 0, deposit: 50 },
+    fees: [],
+    members: [
+      { id: 'm12-1', name: '秦风', phone: '135****6601', isCaptain: true, checkedIn: false },
+      { id: 'm12-2', name: '罗浩', phone: '135****6602', isCaptain: false, checkedIn: false },
+      { id: 'm12-3', name: '许志远', phone: '135****6603', isCaptain: false, checkedIn: false },
+      { id: 'm12-4', name: '高鹏', phone: '135****6604', isCaptain: false, checkedIn: false },
+      { id: 'm12-5', name: '宋一鸣', phone: '135****6605', isCaptain: false, checkedIn: false }
+    ],
+    timeline: [
+      { at: '18:20', text: '预约成功并预付照明押金 50 元', tone: 'success' },
+      { at: '19:10', text: '阵雨突降，队长电话报备：队员暂未出门，可能迟到（天气原因等待核验，不计爽约）', tone: 'warning' }
+    ]
   }
 ]
 
@@ -585,5 +676,15 @@ export const MERGE_REQUESTS: MergeRequest[] = [
     status: 'rejected',
     unreasonable: true,
     time: '17:52'
+  },
+  {
+    id: 'MR-4',
+    bookingId: 'B011',
+    walkerName: '王同学',
+    walkerPhone: '150****3321',
+    people: 1,
+    message: '在河滨附近，求拼二阵 19 点场，打完可以一起收器材',
+    status: 'accepted',
+    time: '19:20'
   }
 ]

@@ -5,17 +5,19 @@ import {
   NRadioGroup, NRadio, NForm, NFormItem, useMessage
 } from 'naive-ui'
 import {
-  useState, nowStr, releaseBooking, endUsage, setSurface, adminReschedule
+  useState, nowStr, releaseBooking, endUsage, setSurface, adminReschedule,
+  activeRainSuspend, rainAffected, publishRainSuspend, recoverRainSuspend
 } from '../store'
 import {
   STATUS_META, PAY_META, bookingRisk, checkedInCount, hm, isActive, money,
-  feeSummary, timeState
+  feeSummary, timeState, slotOptions
 } from '../lib/engine'
-import type { Booking, SurfaceStatus } from '../types'
+import type { Booking, RainEntry, SurfaceStatus } from '../types'
 import RiskTag from '../components/RiskTag.vue'
 import RuleLink from '../components/RuleLink.vue'
 import BookingCard from '../components/BookingCard.vue'
 import BottomSheet from '../components/BottomSheet.vue'
+import RainChoiceBox from '../components/RainChoiceBox.vue'
 import { openIncidents } from '../lib/ui'
 
 const state = useState()
@@ -90,6 +92,37 @@ function submitReschedule() {
   resTarget.value = null
 }
 
+// ---------- 雨后积水暂停与改约（R-WX-3） ----------
+const rainCourt = ref('court-3')
+const rainRecover = ref('21:00')
+const rainReason = ref('巡查发现地面积水，雨后地滑')
+const activeRain = computed(() => activeRainSuspend())
+const rainPreview = computed(() => rainAffected(rainCourt.value, nowStr.value, rainRecover.value))
+function publishRain() {
+  if (!/^\d{2}:\d{2}$/.test(rainRecover.value)) return message.warning('请按 HH:mm 填写预计恢复时间')
+  publishRainSuspend(rainCourt.value, rainRecover.value, rainReason.value || '巡查发现地面积水')
+  message.success('积水暂停已发布：受影响预约已挂起、照明停止计费，等待队长四选一')
+}
+function recoverRain() {
+  if (!activeRain.value) return
+  recoverRainSuspend(activeRain.value.id)
+  message.success('已发布恢复使用通知，场地标记为湿滑')
+}
+function rainBooking(e: RainEntry) { return state.bookings.find(b => b.id === e.bookingId)! }
+/** 可替代场地与改约窗口（实时计算今日剩余空闲） */
+const altCourts = computed(() => {
+  if (!activeRain.value) return []
+  return state.courts
+    .filter(c => c.id !== activeRain.value!.courtId && !c.sealed)
+    .map(c => ({
+      court: c,
+      free: slotOptions(c, state.bookings)
+        .filter(s => hm(s.end) > hm(nowStr.value) && s.freeHalves.length > 0)
+        .map(s => `${s.start}–${s.end}（余 ${s.freeHalves.length} 半场）`)
+    }))
+    .filter(x => x.free.length > 0)
+})
+
 // 公平性配额（今日 18:00–21:00 黄金时段）
 const fairness = computed(() => {
   const gold = state.bookings.filter(b => hm(b.start) >= 18 * 60 && hm(b.start) < 21 * 60 &&
@@ -122,6 +155,64 @@ const fairness = computed(() => {
       <NButton size="small" type="primary" ghost round @click="openIncidents()">
         事件处置（{{ state.incidents.filter(i => i.status !== 'resolved' && i.status !== 'penalized').length }}）
       </NButton>
+    </div>
+
+    <!-- 雨后积水暂停与改约（R-WX-3） -->
+    <div class="rain-panel">
+      <div class="rp-title">🌧️ 雨后积水暂停与改约 <RuleLink id="R-WX-3" /></div>
+
+      <!-- 未发布：巡查发布表单 -->
+      <template v-if="!activeRain">
+        <div class="rp-line">巡查发现积水时发布暂停：系统自动<b>挂起该时段预约、停止照明计费</b>，并生成改约窗口供队长四选一（退款/顺延/室内场/半场拼场）。</div>
+        <div class="rp-form">
+          <NSelect v-model:value="rainCourt" size="small" style="width:168px"
+            :options="state.courts.filter(c => !c.indoor).map(c => ({ label: c.name, value: c.id }))" />
+          <NInput v-model:value="rainRecover" size="small" style="width:86px" placeholder="21:00" />
+          <NInput v-model:value="rainReason" size="small" style="flex:1;min-width:130px" placeholder="巡查原因" />
+          <NButton size="small" type="warning" round @click="publishRain">发布积水暂停</NButton>
+        </div>
+        <div class="rp-preview">
+          <template v-if="rainPreview.length">
+            将影响 {{ rainPreview.length }} 支队伍：{{ rainPreview.map(b => `${b.teamName}（${b.start}–${b.end}，到场 ${checkedInCount(b)} 人）`).join('、') }}
+          </template>
+          <template v-else>该场地当前时段无受影响预约。</template>
+        </div>
+      </template>
+
+      <!-- 已发布：处置面板 -->
+      <template v-else>
+        <div class="rp-active-head">
+          <div style="flex:1;min-width:0">
+            <b>{{ courtName(activeRain.courtId) }}</b> 暂停中 · {{ activeRain.publishAt }} 发布 · 预计 <b>{{ activeRain.recoverAt }}</b> 恢复
+            <div style="font-size:11px;color:#999">原因：{{ activeRain.reason }} · 暂停期间不计迟到/爽约</div>
+          </div>
+          <NPopconfirm @positive-click="recoverRain">
+            <template #trigger><NButton size="tiny" type="success" round>✅ 积水已清·恢复使用</NButton></template>
+            确认现场积水已清？恢复后场地标记为"湿滑"并公示，工单办结。
+          </NPopconfirm>
+        </div>
+
+        <!-- 改约窗口 / 可替代场地 -->
+        <div class="rp-alts">
+          <div class="rp-sub">🪟 改约窗口与可替代场地（实时）</div>
+          <div class="rp-alt-line">⏭️ 顺延：明日同时段同场地，优先排位，押金转存</div>
+          <div v-for="a in altCourts" :key="a.court.id" class="rp-alt-line">
+            {{ a.court.indoor ? '🏢' : '🏟️' }} {{ a.court.name }}{{ a.court.indoor ? '（室内·不受雨天影响）' : '' }}：{{ a.free.join('；') }}
+          </div>
+          <div v-if="altCourts.length === 0" class="rp-alt-line">今日其他场地暂无空闲时段，建议顺延或退款。</div>
+        </div>
+
+        <!-- 受影响队伍：该时段预约 / 已支付照明费 / 到场与等待 -->
+        <div class="rp-sub">受影响队伍（{{ activeRain.entries.length }}）：该时段预约 · 已支付照明费 · 到场与等待</div>
+        <div v-for="e in activeRain.entries" :key="e.bookingId" class="rp-entry">
+          <div class="rpe-top">
+            <b>{{ rainBooking(e).teamName }}</b>
+            <span class="rpe-slot">{{ rainBooking(e).start }}–{{ rainBooking(e).end }} · {{ rainBooking(e).scope === 'full' ? '全场' : '半场' }} {{ rainBooking(e).halves.join('+') }}</span>
+            <NTag size="tiny" :type="STATUS_META[rainBooking(e).status].type">{{ STATUS_META[rainBooking(e).status].label }}</NTag>
+          </div>
+          <RainChoiceBox :booking="rainBooking(e)" acting="admin" />
+        </div>
+      </template>
     </div>
 
     <!-- 分时段预约表 -->
@@ -274,4 +365,17 @@ const fairness = computed(() => {
 .vc-court:first-of-type { border-top:none; }
 .vc-name { font-weight:700; font-size:13px; margin-bottom:6px; }
 .vc-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:6px 0; }
+.rain-panel { background:linear-gradient(135deg,#fffaf0,#f0f7ff); border:1px solid #ffe7ba; border-radius:12px; padding:12px; margin-bottom:12px; }
+.rp-title { font-weight:800; font-size:13.5px; color:#7a4d00; margin-bottom:6px; }
+.rp-line { font-size:12px; color:#666; line-height:1.7; margin-bottom:8px; }
+.rp-form { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+.rp-preview { font-size:11.5px; color:#8a6d3b; background:rgba(255,255,255,.7); border-radius:8px; padding:6px 8px; margin-top:8px; line-height:1.7; }
+.rp-active-head { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; font-size:13px; margin-bottom:8px; }
+.rp-alts { background:rgba(255,255,255,.75); border-radius:10px; padding:8px 10px; margin-bottom:8px; }
+.rp-sub { font-size:12px; font-weight:700; color:#555; margin:6px 0 6px; }
+.rp-alt-line { font-size:12px; color:#555; line-height:1.9; }
+.rp-entry { background:#fff; border-radius:10px; padding:8px 10px; margin-bottom:8px; box-shadow:0 1px 3px rgba(0,0,0,.05); }
+.rpe-top { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:13.5px; }
+.rpe-slot { font-size:11.5px; color:#999; }
+.rain-panel :deep(.rain-box) { margin-bottom:0; margin-top:6px; }
 </style>

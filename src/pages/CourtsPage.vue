@@ -149,6 +149,9 @@ function submitReport() {
 function halfCurrent(c: Court, h: string): Booking | undefined {
   return bookingsOfHalf(c, h, state.bookings).find(b => isActive(b, nowStr.value))
 }
+function halfSuspended(c: Court, h: string): Booking | undefined {
+  return bookingsOfHalf(c, h, state.bookings).find(b => b.status === 'suspended')
+}
 function remainChip(c: Court, h: string): string {
   const b = halfCurrent(c, h)
   if (!b) return ''
@@ -184,6 +187,7 @@ function occupancyBlocks(c: Court, h: string) {
       </div>
 
       <div class="court-tags">
+        <NTag v-if="c.indoor" size="small" round type="info">🏢 室内馆 · 不受雨天影响</NTag>
         <NTag :type="SURFACE_META[c.surface].type" size="small" round>🛝 {{ SURFACE_META[c.surface].label }}</NTag>
         <NTag v-for="(s, h) in c.hoops" :key="h" :type="HOOP_META[s].type" size="small" round>
           {{ h }} 篮筐：{{ HOOP_META[s].label }}
@@ -206,10 +210,12 @@ function occupancyBlocks(c: Court, h: string) {
       <!-- 当前各半场使用情况 -->
       <div class="halves-now">
         <div v-for="h in Object.keys(c.hoops)" :key="h" class="half-chip"
-          :class="{ active: halfCurrent(c, h), disabled: halfSealed(c, h) || c.hoops[h] !== 'normal' }">
+          :class="{ active: halfCurrent(c, h), disabled: halfSealed(c, h) || c.hoops[h] !== 'normal' || c.surface === 'slippery' || c.surface === 'repair' }">
           <div class="hc-name">{{ h }}</div>
           <div v-if="halfSealed(c, h)" class="hc-state">封停中</div>
           <div v-else-if="c.hoops[h] !== 'normal'" class="hc-state">不可用</div>
+          <div v-else-if="halfSuspended(c, h)" class="hc-state" style="color:#b26a00">🌧️ 积水暂停中</div>
+          <div v-else-if="c.surface === 'slippery' || c.surface === 'repair'" class="hc-state">暂停使用</div>
           <div v-else-if="halfCurrent(c, h)" class="hc-state">
             ✅ {{ halfCurrent(c, h)!.teamName }}
             <div style="font-size:11px;color:#18a058">{{ remainChip(c, h) }}</div>

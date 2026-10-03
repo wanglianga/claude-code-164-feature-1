@@ -6,12 +6,13 @@ import {
 } from 'naive-ui'
 import {
   useState, nowStr, addMember, toggleCheckIn, respondMerge,
-  payDeposit, turnOnLight, endUsage, topUp, applyMerge, checkInByCode
+  payDeposit, turnOnLight, endUsage, topUp, applyMerge, checkInByCode, rainEntryOf
 } from '../store'
-import { checkedInCount, rejectMergeCheck, hm, isActive, timeState } from '../lib/engine'
+import { checkedInCount, rejectMergeCheck, hm, isActive, timeState, RAIN_CHOICE_META } from '../lib/engine'
 import type { Booking, MergeRequest } from '../types'
 import BookingCard from '../components/BookingCard.vue'
 import BottomSheet from '../components/BottomSheet.vue'
+import RainChoiceBox from '../components/RainChoiceBox.vue'
 import RuleLink from '../components/RuleLink.vue'
 
 const state = useState()
@@ -104,6 +105,19 @@ function submitApply() {
 const myApplications = computed(() =>
   state.mergeRequests.filter(r => r.walkerName === '王同学' || r.walkerPhone === applyForm.value.phone))
 
+/** 散客申请的场次若遇积水暂停，展示队伍改约结果（避免白跑，R-WX-3） */
+function bookingOf(id: string) { return state.bookings.find(b => b.id === id) }
+function rainOf(bookingId: string) {
+  const f = rainEntryOf(bookingId)
+  if (!f) return null
+  return {
+    active: f.suspend.status === 'active' && !f.entry.choice,
+    choice: f.entry.choice,
+    detail: f.entry.detail,
+    syncNote: f.entry.syncNote
+  }
+}
+
 // 签到码自助签到
 const codeForm = ref({ code: '', name: '王同学' })
 function doCodeCheckIn() {
@@ -150,6 +164,8 @@ function courtName(id: string) { return state.courts.find(c => c.id === id)?.nam
       <NEmpty v-if="myBookings.length === 0" description="还没有预约，去场地页约一场吧" />
 
       <div v-for="b in myBookings" :key="b.id">
+        <!-- 雨后积水暂停：队长四选一（退款/顺延/室内场/半场拼场，R-WX-3） -->
+        <RainChoiceBox v-if="rainEntryOf(b.id)" :booking="b" acting="captain" />
         <BookingCard :booking="b">
           <template #actions>
             <!-- 待开场 -->
@@ -198,6 +214,32 @@ function courtName(id: string) { return state.courts.find(c => c.id === id)?.nam
           style="flex:1" :input-props="{ inputmode: 'numeric' }" />
         <NButton type="primary" round @click="doCodeCheckIn">签到</NButton>
       </div>
+
+      <!-- 我的拼场申请：场次变动（积水暂停/改约）实时同步，避免白跑 -->
+      <template v-if="myApplications.length">
+        <div class="section-title">我的拼场申请（{{ myApplications.length }}）</div>
+        <div v-for="r in myApplications" :key="r.id" class="merge-card">
+          <div class="mc-top">
+            <b>{{ bookingOf(r.bookingId)?.teamName ?? '（场次已删除）' }}</b>
+            <NTag size="tiny" :type="r.status === 'accepted' ? 'success' : r.status === 'pending' ? 'warning' : 'default'">
+              {{ r.status === 'accepted' ? '已接受' : r.status === 'pending' ? '待队长处理' : '已被拒绝' }}
+            </NTag>
+          </div>
+          <div class="mc-row" v-if="bookingOf(r.bookingId)">
+            📍 {{ courtName(bookingOf(r.bookingId)!.courtId) }} · {{ bookingOf(r.bookingId)!.start }}–{{ bookingOf(r.bookingId)!.end }}
+            <template v-if="r.status === 'accepted'"> · 凭码 {{ bookingOf(r.bookingId)!.checkInCode }} 签到</template>
+          </div>
+          <div v-if="rainOf(r.bookingId)" class="rain-sync" :class="{ done: !rainOf(r.bookingId)!.active }">
+            <template v-if="rainOf(r.bookingId)!.active">
+              🌧️ 该场次因雨后积水暂停使用，队伍正在选择改约方案，结果会第一时间同步给你，<b>先别出门，避免白跑</b> <RuleLink id="R-WX-3" />
+            </template>
+            <template v-else-if="rainOf(r.bookingId)!.choice">
+              🌧️ 积水处置已同步：队长选择「{{ RAIN_CHOICE_META[rainOf(r.bookingId)!.choice!].label }}」——{{ rainOf(r.bookingId)!.detail }}。
+              {{ rainOf(r.bookingId)!.choice === 'refund' ? '拼场申请已随场次取消，未产生任何费用。' : '你的拼场权益延续至新安排，可按新时段到场。' }}
+            </template>
+          </div>
+        </div>
+      </template>
 
       <div class="section-title">找拼场（{{ mergeable.length }} 场可申请）</div>
       <NEmpty v-if="mergeable.length === 0" description="当前没有可拼的队伍，可去现场排队候补（R-FAIR-2）" />
@@ -326,4 +368,6 @@ function courtName(id: string) { return state.courts.find(c => c.id === id)?.nam
 .mc-actions { display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap; }
 .invite-box { padding-bottom:10px; }
 .member-line { display:flex; justify-content:space-between; align-items:center; padding:8px 2px; border-bottom:1px solid #f2f2f2; font-size:13px; }
+.rain-sync { background:#fff7e6; border:1px solid #ffe7ba; border-radius:8px; padding:6px 8px; font-size:12px; color:#7a4d00; line-height:1.7; margin-top:6px; }
+.rain-sync.done { background:#f0fbf5; border-color:#b7eb8f; color:#237804; }
 </style>

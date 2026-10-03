@@ -6,9 +6,9 @@ import {
 import type { Booking } from '../types'
 import {
   STATUS_META, PAY_META, FEE_META, checkedInCount, feeSummary,
-  fmt, hm, isActive, money, timeState
+  fmt, hm, isActive, money, timeState, RAIN_CHOICE_META
 } from '../lib/engine'
-import { courtById, lightLive, nowStr } from '../store'
+import { courtById, lightLive, nowStr, rainEntryOf } from '../store'
 import RuleLink from './RuleLink.vue'
 import RiskTag from './RiskTag.vue'
 import { bookingRisk } from '../lib/engine'
@@ -27,6 +27,12 @@ const ts = computed(() => timeState(props.booking, nowStr.value))
 const risk = computed(() => bookingRisk(props.booking, state.incidents, nowStr.value))
 const present = computed(() => checkedInCount(props.booking))
 const summary = computed(() => feeSummary(props.booking, court.value, nowStr.value, !!light.value?.frozen))
+/** 雨后积水暂停：展示到场人数与等待时长（R-WX-3） */
+const rain = computed(() => {
+  const f = rainEntryOf(props.booking.id)
+  return f && f.suspend.status === 'active' ? f : null
+})
+const rainWait = computed(() => rain.value ? Math.max(0, hm(nowStr.value) - hm(rain.value.entry.waitFrom)) : 0)
 
 const remainText = computed(() => {
   if (props.booking.status === 'booked') {
@@ -82,6 +88,14 @@ const progress = computed(() => {
         type="line" :percentage="progress" :show-indicator="false"
         :status="remainType === 'error' ? 'error' : remainType === 'warning' ? 'warning' : 'success'"
         :height="6" />
+    </div>
+
+    <!-- 雨后积水暂停：记录到场人数与等待时长，供差异化退款/补偿（R-WX-3） -->
+    <div v-if="rain" class="bc-rain">
+      🌧️ 积水暂停中 · 暂停时到场热身 <b>{{ rain.entry.arrivedAtPublish }}</b> 人 ·
+      已等待 <b>{{ rainWait }}</b> 分钟
+      <template v-if="!rain.entry.choice"> · 等待队长四选一（退款/顺延/室内场/半场拼场）</template>
+      <template v-else> · 已选「{{ RAIN_CHOICE_META[rain.entry.choice].label }}」，{{ rain.entry.syncNote }}</template>
     </div>
 
     <NGrid :cols="3" :x-gap="8" class="bc-stats">
@@ -198,6 +212,8 @@ const progress = computed(() => {
 .fee-light-live { color:#e8840c; }
 .fee-total { border-top:1px solid #f0f0f0; padding-top:6px; margin-top:6px; font-size:13px; }
 .bc-admin-note { background:#fff7e6; border:1px solid #ffe7ba; border-radius:8px; padding:8px; font-size:12px; line-height:1.7; margin-top:8px; color:#7a4d00; }
+.bc-rain { background:#fffaf0; border:1px solid #ffe7ba; border-radius:8px; padding:7px 9px; font-size:12px; color:#7a4d00; line-height:1.7; margin-top:6px; }
+.bc-rain b { color:#d03050; }
 .bc-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
 .tl { position:relative; padding-left:4px; }
 .tl-item { position:relative; padding-left:16px; font-size:12px; line-height:1.8; color:#444; }

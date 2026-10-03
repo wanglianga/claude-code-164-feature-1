@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { NButton, NTag, NEmpty, NAlert, NGrid, NGridItem } from 'naive-ui'
-import { useState, nowStr, releaseBooking, endUsage } from '../store'
+import { useState, nowStr, releaseBooking, endUsage, rainEntryOf } from '../store'
 import {
   SURFACE_META, HOOP_META, bookingsOfHalf, checkedInCount, courtRisk,
-  fmt, halfSealed, isActive, timeState
+  fmt, halfSealed, hm, isActive, timeState
 } from '../lib/engine'
 import type { Booking, Court } from '../types'
 import RiskTag from '../components/RiskTag.vue'
@@ -15,6 +15,14 @@ const state = useState()
 
 function currentOf(c: Court, h: string): Booking | undefined {
   return bookingsOfHalf(c, h, state.bookings).find(b => isActive(b, nowStr.value))
+}
+/** 积水暂停中的预约（R-WX-3）：半场挂起，等待队长四选一 */
+function suspendedOf(c: Court, h: string): Booking | undefined {
+  return bookingsOfHalf(c, h, state.bookings).find(b => b.status === 'suspended')
+}
+function rainWaitOf(b: Booking): number {
+  const f = rainEntryOf(b.id)
+  return f ? Math.max(0, hm(nowStr.value) - hm(f.entry.waitFrom)) : 0
 }
 function nextOf(c: Court, h: string): Booking | undefined {
   return bookingsOfHalf(c, h, state.bookings)
@@ -87,6 +95,19 @@ function forceEnd(b: Booking) { endUsage(b.id, true) }
           <div class="hr-off">{{ halfSealed(c, h) ? '封场不可用' : c.hoops[h] === 'maintaining' ? '篮筐维修中' : '篮筐封停' }}</div>
           <div v-if="halfSealed(c, h)" class="hr-rule">受影响队伍已全额退款、可免费改约优先排位 <RuleLink id="R-SEAL-1" /></div>
           <div v-else class="hr-rule">已预约队伍自动改约/退款 <RuleLink id="R-WX-2" /></div>
+        </div>
+
+        <div v-else-if="suspendedOf(c, h)" class="hr-body">
+          <div class="hr-main">
+            <span class="hr-team" style="color:#b26a00">🌧️ 积水暂停 · {{ suspendedOf(c, h)!.teamName }}</span>
+            <span class="hr-remain r-warn">等待改约</span>
+          </div>
+          <div class="hr-meta">
+            {{ suspendedOf(c, h)!.start }}–{{ suspendedOf(c, h)!.end }} ·
+            到场热身 {{ rainEntryOf(suspendedOf(c, h)!.id)?.entry.arrivedAtPublish ?? 0 }} 人 ·
+            已等待 {{ rainWaitOf(suspendedOf(c, h)!) }} 分钟 · 队长四选一处理中
+            <RuleLink id="R-WX-3" />
+          </div>
         </div>
 
         <div v-else-if="currentOf(c, h)" class="hr-body">

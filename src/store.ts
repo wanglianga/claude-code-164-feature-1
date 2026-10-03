@@ -1,10 +1,10 @@
 import { computed, reactive, ref } from 'vue'
 import type {
   Booking, Court, FeeItem, Incident, IncidentAction, IncidentStatus,
-  IncidentType, Member, MergeRequest, RoleId, Scope, TimelineEvent
+  IncidentType, Member, MergeRequest, RainChoice, RainSuspend, RoleId, Scope, TimelineEvent
 } from './types'
-import { BOOKINGS, COURTS, INCIDENTS, MERGE_REQUESTS, NOW_HM, ROLES, TODAY } from './data/mock'
-import { checkedInCount, feeSummary, hm, lightQuote } from './lib/engine'
+import { BOOKINGS, COURTS, INCIDENTS, MERGE_REQUESTS, NOW_HM, ROLES, TODAY, TOMORROW } from './data/mock'
+import { checkedInCount, feeSummary, hm, lightQuote, RAIN_CHOICE_META, rainAlternatives, rainCompensation } from './lib/engine'
 
 // ---------- 模拟时钟 ----------
 const nowStr = ref(NOW_HM)
@@ -40,6 +40,8 @@ interface State {
   bookings: Booking[]
   incidents: Incident[]
   mergeRequests: MergeRequest[]
+  /** 雨后积水暂停事件（R-WX-3） */
+  rainSuspends: RainSuspend[]
   /** 站内消息（模拟短信/通知） */
   notices: { id: number; to: RoleId | 'all'; text: string; at: string }[]
 }
@@ -50,6 +52,7 @@ const state = reactive<State>({
   bookings: structuredClone(BOOKINGS),
   incidents: structuredClone(INCIDENTS),
   mergeRequests: structuredClone(MERGE_REQUESTS),
+  rainSuspends: [],
   notices: []
 })
 
@@ -66,7 +69,7 @@ export function setRole(r: RoleId) {
   state.role = r
 }
 
-const idCounters: Record<string, number> = { B: 10, 'MR-': 3, I: 6 }
+const idCounters: Record<string, number> = { B: 12, 'MR-': 4, I: 6, 'RS-': 0 }
 function nextId(prefix: string, pad = 3) {
   const n = (idCounters[prefix] = (idCounters[prefix] ?? 0) + 1)
   return `${prefix}${String(n).padStart(pad, '0')}`
@@ -489,6 +492,172 @@ export function adminReschedule(bookingId: string, newStart: string, newEnd: str
   if (compensate > 0) b.fees.push({ kind: 'reschedule', label: `改约补偿（${reason}）`, amount: -compensate, ruleId: 'R-FAIR-4' })
   b.payStatus = 'refunding'
   tl(b, `管理员改约 ${newStart}–${newEnd}：${reason}；补偿 ${compensate} 元、新时段优先排位（R-FAIR-4）`, 'warning')
+}
+
+// ---------- 雨后积水暂停与改约（R-WX-3） ----------
+export function activeRainSuspend(courtId?: string) {
+  return state.rainSuspends.find(r => r.status === 'active' && (!courtId || r.courtId === courtId))
+}
+
+/** 查询预约所属的积水暂停事件与处置进度 */
+export function rainEntryOf(bookingId: string) {
+  for (const r of state.rainSuspends) {
+    const e = r.entries.find(x => x.bookingId === bookingId)
+    if (e) return { suspend: r, entry: e }
+  }
+  return null
+}
+
+/** 暂停窗口 [fromHm, toHm) 内受影响的预约（今日该场地、仍在使用状态、时段重叠） */
+export function rainAffected(courtId: string, fromHm: string, toHm: string) {
+  return state.bookings.filter(b =>
+    b.courtId === courtId && b.date === TODAY &&
+    ['booked', 'ongoing', 'late', 'overtime'].includes(b.status) &&
+    hm(b.start) < hm(toHm) && hm(b.end) > hm(fromHm))
+}
+
+/** 管理员巡查发布积水暂停：场地置为积水、受影响预约挂起、照明停止计费、生成工单（R-WX-1 / R-WX-3） */
+export function publishRainSuspend(courtId: string, recoverAt: string, reason: string): RainSuspend {
+  const court = state.courts.find(c => c.id === courtId)!
+  court.surface = 'slippery'
+  const affected = rainAffected(courtId, nowStr.value, recoverAt)
+  const inc: Incident = {
+    id: nextId('I-'),
+    type: 'rain',
+    courtId,
+    bookingIds: affected.map(b => b.id),
+    title: `雨后积水 · ${court.name}暂停使用`,
+    desc: `${nowStr.value} 管理员巡查发现${court.name}地面积水打滑，发布暂停使用通知，预计 ${recoverAt} 恢复。受影响 ${affected.length} 支预约队伍，由队长四选一（退款/顺延/室内场/半场拼场），结果同步队员与拼场散客。`,
+    source: '管理员巡查',
+    time: nowStr.value,
+    status: 'mediating',
+    actions: [],
+    ruleApplied: ['R-WX-1', 'R-WX-3']
+  }
+  const suspend: RainSuspend = {
+    id: nextId('RS-'),
+    courtId,
+    publishAt: nowStr.value,
+    recoverAt,
+    reason,
+    entries: [],
+    status: 'active',
+    incidentId: inc.id
+  }
+  for (const b of affected) {
+    // 停止照明计费：按实际开灯时长结算（R-WX-1）
+    if (b.lighting.enabled && !b.lighting.offAt) b.lighting.offAt = nowStr.value
+    b.status = 'suspended'
+    const arrived = checkedInCount(b)
+    suspend.entries.push({
+      bookingId: b.id,
+      arrivedAtPublish: arrived,
+      waitFrom: nowStr.value,
+      compensate: 0,
+      synced: false
+    })
+    tl(b, `管理员巡查发现场地积水，暂停使用（预计 ${recoverAt} 恢复）：照明计费已停止，到场 ${arrived} 人开始计等待时长，请队长四选一（R-WX-3）`, 'warning')
+  }
+  inc.actions.push({
+    at: nowStr.value, by: 'admin',
+    text: `巡查核验积水属实，发布暂停使用（预计 ${recoverAt} 恢复），受影响预约 ${affected.length} 个：${affected.map(b => `${b.teamName}（到场 ${checkedInCount(b)} 人）`).join('、') || '无'}（R-WX-1 / R-WX-3）`
+  })
+  state.incidents.unshift(inc)
+  state.rainSuspends.unshift(suspend)
+  notify('all', `🌧️ ${court.name}因地面积水暂停使用（预计 ${recoverAt} 恢复），受影响队伍可免费改约/退款，请勿白跑`)
+  return suspend
+}
+
+/** 积水处理完毕，恢复使用（地面仍湿滑，放置警示牌） */
+export function recoverRainSuspend(id: string) {
+  const s = state.rainSuspends.find(x => x.id === id)!
+  const court = state.courts.find(c => c.id === s.courtId)!
+  s.status = 'recovered'
+  court.surface = 'wet'
+  const inc = state.incidents.find(i => i.id === s.incidentId)
+  if (inc) {
+    inc.status = 'resolved'
+    act(inc, 'admin', `现场核验积水已清、地面仍湿滑，${nowStr.value} 起恢复使用并放置警示牌（R-WX-1）`)
+  }
+  notify('all', `${court.name}积水已清，恢复使用（地面仍湿滑，请谨慎运动）`)
+}
+
+/** 队长（或管理员代录）对受影响预约四选一：退款 / 顺延 / 室内场 / 半场拼场（R-WX-3） */
+export function chooseRainOption(bookingId: string, choice: RainChoice, by: RoleId = 'captain') {
+  const found = rainEntryOf(bookingId)
+  if (!found || found.entry.choice) return
+  const { suspend, entry } = found
+  const b = state.bookings.find(x => x.id === bookingId)!
+  const court = state.courts.find(c => c.id === b.courtId)!
+  const waitMin = Math.max(0, hm(nowStr.value) - hm(entry.waitFrom))
+  const comp = rainCompensation(entry.arrivedAtPublish, waitMin)
+  const alts = rainAlternatives(b, state.courts, state.bookings, nowStr.value, TOMORROW)
+  const inc = state.incidents.find(i => i.id === suspend.incidentId)
+
+  // 1) 照明费按暂停前实际开灯时长定案（R-WX-1）
+  const q = lightQuote(b, court, nowStr.value)
+  b.fees = b.fees.filter(f => f.kind !== 'lighting')
+  if (q && q.minutes > 0) {
+    const fee = Math.round(q.fee * 100) / 100
+    b.fees.unshift({ kind: 'lighting', label: `照明费 ${q.minutes} 分钟（暂停前实际开灯时长）`, amount: fee, ruleId: 'R-LIGHT-1' })
+    b.lighting.minutes = q.minutes
+    b.lighting.fee = fee
+  }
+  const lightFee = Math.round((b.lighting.fee || 0) * 100) / 100
+  const depositBalance = Math.round((b.lighting.deposit - lightFee) * 100) / 100
+
+  // 2) 到场等待补贴：区别于完全未到场的预约（R-WX-3）
+  if (comp.total > 0) {
+    b.fees.push({
+      kind: 'weather',
+      label: `积水暂停·到场等待补贴（${entry.arrivedAtPublish} 人 × 3 元${comp.waitBonus ? ' + 等待超 30 分钟 10 元' : ''}）`,
+      amount: -comp.total,
+      ruleId: 'R-WX-3',
+      note: `暂停时到场 ${entry.arrivedAtPublish} 人，等待 ${waitMin} 分钟`
+    })
+  }
+
+  // 3) 按选择落账
+  let detail = ''
+  if (choice === 'refund') {
+    b.status = 'cancelled'
+    b.payStatus = 'refunded'
+    if (depositBalance > 0) {
+      b.fees.push({ kind: 'weather', label: `押金余额退回（押金 ${b.lighting.deposit} − 照明 ${lightFee}）`, amount: -depositBalance, ruleId: 'R-WX-1' })
+    }
+    detail = `照明费按实际 ${b.lighting.minutes} 分钟计 ${lightFee} 元，押金余额 ${Math.max(0, depositBalance)} 元${comp.total ? ` + 到场补贴 ${comp.total} 元` : ''}原路退回`
+    b.adminNote = `雨后积水暂停 · 选择全额退款（R-WX-3）：${detail}。`
+  } else {
+    b.status = 'rescheduled'
+    b.payStatus = 'depositPaid' // 押金余额转存新时段
+    const alt = choice === 'delay' ? alts.delay : choice === 'indoor' ? alts.indoor : alts.shareHalf
+    const altLabel = alt?.label ?? '待管理员人工安排'
+    detail = `${altLabel}`
+    const extra = choice === 'indoor' ? '室内照明差价由场地方承担'
+      : choice === 'shareHalf' ? '新场地照明享拼场 8 折'
+      : '新时段优先排位'
+    b.adminNote = `雨后积水暂停 · ${RAIN_CHOICE_META[choice].label}：${altLabel}，${extra}。押金余额 ${Math.max(0, depositBalance)} 元已转存新时段${comp.total ? `，到场补贴 ${comp.total} 元原路退回` : ''}（R-WX-3）。`
+  }
+  entry.choice = choice
+  entry.choiceAt = nowStr.value
+  entry.compensate = comp.total
+  entry.detail = detail
+
+  // 4) 选择结果同步队员与拼场散客，避免白跑（R-WX-3）
+  const walkers = state.mergeRequests.filter(r => r.bookingId === b.id && r.status !== 'rejected')
+  entry.synced = true
+  entry.syncNote = `已同步：队员 ${b.members.length} 人、拼场散客 ${walkers.length} 人`
+  const who = by === 'admin' ? '管理员代队长登记（电话确认）' : '队长选择'
+  tl(b, `${who}「${RAIN_CHOICE_META[choice].label}」：${detail}；已同步 ${b.members.length} 名队员${walkers.length ? ` 与 ${walkers.length} 名拼场散客` : ''}（R-WX-3）`, 'success')
+  notify('captain', `${b.teamName}：积水暂停处理结果 — ${RAIN_CHOICE_META[choice].label}（${detail}）`)
+  if (walkers.length) {
+    notify('walkin', `你申请拼场的「${b.teamName}」因场地积水${choice === 'refund' ? '已取消并全额退款，拼场申请同时取消' : `已改约：${detail}，拼场权益延续`}，请勿白跑`)
+  }
+  notify('admin', `${b.teamName} 积水处置完成：${RAIN_CHOICE_META[choice].label}（到场 ${entry.arrivedAtPublish} 人、等待 ${waitMin} 分钟、补贴 ${comp.total} 元）`)
+  if (inc) {
+    act(inc, by === 'admin' ? 'admin' : 'captain',
+      `${b.teamName} ${who}「${RAIN_CHOICE_META[choice].label}」：${detail}；到场 ${entry.arrivedAtPublish} 人、等待 ${waitMin} 分钟，补贴 ${comp.total} 元；${entry.syncNote}`)
+  }
 }
 
 // ---------- 选择器 ----------

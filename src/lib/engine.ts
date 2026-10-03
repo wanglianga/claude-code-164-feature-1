@@ -1,6 +1,6 @@
 import type {
   Booking, Court, FeeItem, Incident, IncidentType, IncidentStatus, BookingStatus,
-  MergeRequest, PayStatus, SurfaceStatus, HoopStatus
+  MergeRequest, PayStatus, SurfaceStatus, HoopStatus, RainChoice
 } from '../types'
 
 // ---------- 时间工具 ----------
@@ -46,7 +46,8 @@ export const STATUS_META: Record<BookingStatus, { label: string; type: 'success'
   rescheduled: { label: '已改约', type: 'warning' },
   sealed: { label: '封场未使用', type: 'default' },
   noshow: { label: '爽约', type: 'error' },
-  rejected: { label: '审核不通过', type: 'error' }
+  rejected: { label: '审核不通过', type: 'error' },
+  suspended: { label: '积水暂停中', type: 'warning' }
 }
 export const PAY_META: Record<PayStatus, { label: string; type: 'success' | 'warning' | 'error' | 'default' | 'info' }> = {
   unpaid: { label: '未支付', type: 'warning' },
@@ -233,6 +234,7 @@ export function bookingRisk(b: Booking, incidents: Incident[], nowHm: string): R
   else if (ts.inGrace) raise('medium', '进入 5 分钟清场缓冲，下一时段队伍待场')
   if (ts.releasable) raise('high', '开场 20 分钟未签到，场地可释放给候补散客（R-LATE-1）')
   if (b.status === 'booked' && ts.lateMinutes > 0 && ts.lateMinutes < 20) raise('medium', `已迟到 ${ts.lateMinutes} 分钟`)
+  if (b.status === 'suspended') raise('medium', '雨后积水暂停使用，等待队长四选一（退款/顺延/室内场/半场拼场，R-WX-3）')
   if (b.credit < 80) raise('medium', `信用分 ${b.credit}（低于 80，冲突排序靠后）`)
   if (b.credit < 60) raise('high', `信用分 ${b.credit}（低于 60，应暂停预约资格）`)
 
@@ -360,4 +362,97 @@ export function rejectMergeCheck(b: Booking, req: MergeRequest): { unreasonable:
   }
   if (total >= 6) return { unreasonable: true, hint: '拼入后达到半场合理人数（≥6 人），无理由拒绝将收 20 元资源占用费并扣信用 5 分（R-MERGE-1）' }
   return { unreasonable: false, hint: '当前人数不足，建议同意拼场以提高场地利用率' }
+}
+
+// ---------- 雨后积水暂停与改约（R-WX-3） ----------
+export const RAIN_CHOICE_META: Record<RainChoice, { label: string; emoji: string; desc: string }> = {
+  refund: { label: '全额退款', emoji: '💰', desc: '押金退还，已计照明费按实际开灯时长结算；到场补贴照发' },
+  delay: { label: '顺延', emoji: '⏭️', desc: '顺延至明日同时段同场地，优先排位；押金余额转存新时段' },
+  indoor: { label: '改到室内场', emoji: '🏢', desc: '改约室内场馆今日最近空闲时段，照明差价由场地方承担' },
+  shareHalf: { label: '接受半场拼场', emoji: '🤝', desc: '并入其他场地空闲半场，照明 8 折，到场补贴照发' }
+}
+
+/** 到场等待补贴（R-WX-3）：到场 3 元/人，等待超 30 分钟每队再加 10 元；完全未到场无补贴 */
+export function rainCompensation(arrived: number, waitMin: number): { perHead: number; waitBonus: number; total: number } {
+  const perHead = arrived * 3
+  const waitBonus = arrived > 0 && waitMin >= 30 ? 10 : 0
+  return { perHead, waitBonus, total: perHead + waitBonus }
+}
+
+export interface RainAltOption {
+  kind: RainChoice
+  label: string
+  desc: string
+  courtId?: string
+  courtName?: string
+  halves?: string[]
+  start?: string
+  end?: string
+  date?: string
+}
+
+export interface RainAlternatives {
+  delay: RainAltOption
+  indoor: RainAltOption | null
+  shareHalf: RainAltOption | null
+}
+
+/** 受影响预约的改约窗口：顺延（明日同时段）/ 室内场（今日最近空闲）/ 半场拼场（其他场地空闲半场） */
+export function rainAlternatives(
+  b: Booking, courts: Court[], bookings: Booking[], nowHm: string, tomorrow: string
+): RainAlternatives {
+  const ownCourt = courts.find(c => c.id === b.courtId)
+  const need = b.scope === 'full' ? 2 : 1
+  const delay: RainAltOption = {
+    kind: 'delay',
+    label: `明日（${tomorrow.slice(5).replace('-', '/')}）${b.start}–${b.end} 同场地 ${b.halves.join('+')}`,
+    desc: '同场地同半场顺延，优先排位；押金余额转存新时段',
+    courtId: b.courtId,
+    courtName: ownCourt?.name,
+    halves: b.halves,
+    start: b.start,
+    end: b.end,
+    date: tomorrow
+  }
+  const dur = hm(b.end) - hm(b.start)
+  let indoor: RainAltOption | null = null
+  for (const c of courts.filter(x => x.indoor && !x.sealed)) {
+    // 今日尚未结束的时段均可转入（进行中的时段可立即转入）
+    const slot = slotOptions(c, bookings).find(s =>
+      hm(s.end) > hm(nowHm) && hm(s.end) - hm(s.start) >= dur && s.freeHalves.length >= need)
+    if (slot) {
+      indoor = {
+        kind: 'indoor',
+        label: `${c.name} ${slot.freeHalves.slice(0, need).join('+')} 今日 ${slot.start}–${slot.end}`,
+        desc: `室内馆不受雨天影响，照明差价（¥${c.lighting.pricePerMinute}/分钟）由场地方承担`,
+        courtId: c.id,
+        courtName: c.name,
+        halves: slot.freeHalves.slice(0, need),
+        start: slot.start,
+        end: slot.end,
+        date: b.date
+      }
+      break
+    }
+  }
+  let shareHalf: RainAltOption | null = null
+  for (const c of courts.filter(x =>
+    !x.indoor && x.id !== b.courtId && !x.sealed && x.surface !== 'slippery' && x.surface !== 'repair')) {
+    const slot = slotOptions(c, bookings).find(s => hm(s.end) > hm(nowHm) && s.freeHalves.length >= 1)
+    if (slot) {
+      shareHalf = {
+        kind: 'shareHalf',
+        label: `${c.name} ${slot.freeHalves[0]} 今日 ${slot.start}–${slot.end}`,
+        desc: '并入该空闲半场（若届时已有队伍则共同使用），照明 8 折',
+        courtId: c.id,
+        courtName: c.name,
+        halves: [slot.freeHalves[0]],
+        start: slot.start,
+        end: slot.end,
+        date: b.date
+      }
+      break
+    }
+  }
+  return { delay, indoor, shareHalf }
 }

@@ -46,6 +46,8 @@ export interface Court {
   sealReason?: string
   /** 部分封场（如仅封 H3/H4），为空表示全场地封停 */
   sealedHalves?: string[]
+  /** 室内场馆（不受雨天/积水影响，是雨后改约的替代去向） */
+  indoor?: boolean
 }
 
 export type Scope = 'half' | 'full'
@@ -61,6 +63,7 @@ export type BookingStatus =
   | 'sealed'        // 封场未使用
   | 'noshow'        // 爽约
   | 'rejected'      // 审核不通过
+  | 'suspended'     // 雨后积水暂停中（等待队长选择改约方案）
 
 export type PayStatus = 'unpaid' | 'depositPaid' | 'paid' | 'refunding' | 'refunded' | 'deducted'
 
@@ -208,4 +211,47 @@ export interface RuleText {
   chapter: string
   title: string
   body: string
+}
+
+// ============ 雨后积水暂停与改约（R-WX-3） ============
+
+/** 队长对受影响预约的四选一处置 */
+export type RainChoice =
+  | 'refund'      // 全额退款（押金退、已计照明费按实际结算，到场补贴照发）
+  | 'delay'       // 顺延至明日同时段同场地（优先排位）
+  | 'indoor'      // 改到室内场馆（今日最近空闲时段）
+  | 'shareHalf'   // 接受半场拼场（并入 其他场地空闲半场，照明 8 折）
+
+/** 暂停事件里每个受影响预约的处置进度 */
+export interface RainEntry {
+  bookingId: string
+  /** 暂停发布时已到场热身人数（补贴人数快照，防止后续刷单） */
+  arrivedAtPublish: number
+  /** 等待时长起算点 HH:mm（= 暂停发布时间） */
+  waitFrom: string
+  choice?: RainChoice
+  choiceAt?: string
+  /** 选择结果说明（新时段/新场地/退款明细） */
+  detail?: string
+  /** 到场等待补贴（元，正数；未到场为 0） */
+  compensate: number
+  /** 选择结果是否已同步队员与拼场散客 */
+  synced: boolean
+  /** 同步说明，如「已同步：队员 7 人、拼场散客 1 人」 */
+  syncNote?: string
+}
+
+/** 一次雨后积水暂停事件（管理员巡查发布后生成） */
+export interface RainSuspend {
+  id: string
+  courtId: string
+  /** 巡查发现/发布时间 HH:mm */
+  publishAt: string
+  /** 预计恢复时间 HH:mm（改约窗口依据） */
+  recoverAt: string
+  reason: string
+  entries: RainEntry[]
+  status: 'active' | 'recovered'
+  /** 关联的事件工单（事件处置页留痕） */
+  incidentId: string
 }
