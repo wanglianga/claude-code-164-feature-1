@@ -12,6 +12,7 @@ import {
 import { INCIDENT_META } from '../lib/engine'
 import type { Incident, IncidentStatus, RoleId } from '../types'
 import RuleLink from '../components/RuleLink.vue'
+import RainSuspensionPanel from '../components/RainSuspensionPanel.vue'
 import { incidentFilter } from '../lib/ui'
 
 const state = useState()
@@ -142,6 +143,9 @@ const typeOptions = [
         </NTag>
       </div>
 
+      <!-- 积水暂停改约面板（R-WX-3） -->
+      <RainSuspensionPanel v-if="inc.type === 'rain' && inc.affectedHalves?.length" :incident="inc" />
+
       <!-- 处置时间线 -->
       <NCollapse>
         <NCollapseItem :title="`核验与处置记录（${inc.actions.length} 条）`" name="a">
@@ -221,7 +225,7 @@ const typeOptions = [
 
         <!-- 下雨/维修：核验记录 -->
         <template v-else>
-          <div class="handle-title">现场核验记录（适用 <RuleLink :id="inc.type === 'rain' ? 'R-WX-1' : 'R-WX-2'" />）：</div>
+          <div class="handle-title">现场核验记录（适用 <RuleLink :id="inc.type === 'rain' ? (inc.affectedHalves?.length ? 'R-WX-3' : 'R-WX-1') : 'R-WX-2'" />）：</div>
         </template>
 
         <!-- 通用补充记录 -->

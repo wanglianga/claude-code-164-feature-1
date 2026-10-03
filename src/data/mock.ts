@@ -55,7 +55,24 @@ export const COURTS: Court[] = [
     lockersFree: 11,
     lighting: { available: true, pricePerMinute: 1.0, autoOnHour: 18, deposit: 50, status: 'ok' },
     distanceM: 1200,
-    sealed: false
+    sealed: false,
+    puddleHalves: ['H1', 'H2', 'H3']
+  },
+  {
+    id: 'court-4',
+    name: '邻里中心室内篮球馆',
+    park: '街道邻里中心',
+    halfCourts: 4,
+    surface: 'good',
+    hoops: { H1: 'normal', H2: 'normal', H3: 'normal', H4: 'normal' },
+    noiseSensitive: ['室内场馆（夜间无噪声外溢）'],
+    noiseCurfew: 22,
+    lockersTotal: 30,
+    lockersFree: 16,
+    lighting: { available: true, pricePerMinute: 1.2, autoOnHour: 18, deposit: 50, status: 'ok' },
+    distanceM: 1500,
+    sealed: false,
+    indoor: true
   }
 ]
 
@@ -162,14 +179,16 @@ export const BOOKINGS: Booking[] = [
     captainPhone: '136****3301',
     fixedTeam: true,
     credit: 95,
-    status: 'ongoing',
+    status: 'rainPause',
     payStatus: 'depositPaid',
     checkInCode: '592310',
     lockerNos: [1, 2, 3],
-    lighting: { enabled: true, onAt: '19:02', minutes: 0, fee: 0, deposit: 100 },
+    lighting: { enabled: true, onAt: '19:02', offAt: '19:40', minutes: 38, fee: 60.8, deposit: 100 },
     fees: [
-      { kind: 'lighting', label: '照明费（全场 ×2 半场，实时累计）', amount: 0, ruleId: 'R-LIGHT-1' }
+      { kind: 'lighting', label: '照明费（积水暂停，19:40 起计时冻结，待免收）', amount: 60.8, ruleId: 'R-LIGHT-1' }
     ],
+    rainIncidentId: 'I-007',
+    arrival: { recordedAt: '19:42', presentCount: 9, warming: true, pausedAt: '19:40' },
     members: [
       { id: 'm3-1', name: '韩磊', phone: '136****3301', isCaptain: true, checkedIn: true, checkInAt: '19:01' },
       { id: 'm3-2', name: '马超', phone: '136****3302', isCaptain: false, checkedIn: true, checkInAt: '19:01' },
@@ -184,7 +203,9 @@ export const BOOKINGS: Booking[] = [
     ],
     timeline: [
       { at: '09:20', text: '固定球队周预约成功（全场），预付照明押金 100 元', tone: 'success' },
-      { at: '19:01', text: '全队签到 9/10，照明开启', tone: 'success' }
+      { at: '19:01', text: '全队签到 9/10，照明开启', tone: 'success' },
+      { at: '19:40', text: '阵雨骤停，管理员巡查发现 H1/H2 半场积水，发布暂停通知，照明已关灯、计时冻结', tone: 'error' },
+      { at: '19:42', text: '管理员现场点验：已到场热身 9 人，等待安置方案（到场人数与等待时长将影响补偿，R-WX-3）', tone: 'warning' }
     ]
   },
   {
@@ -412,7 +433,8 @@ export const BOOKINGS: Booking[] = [
     ],
     timeline: [
       { at: '18:40', text: '预约成功', tone: 'success' },
-      { at: '19:30', text: '街道通知 21:00 起在该场地举办社区文化活动，管理员正在核对封场范围', tone: 'warning' }
+      { at: '19:30', text: '街道通知 21:00 起在该场地举办社区文化活动，管理员正在核对封场范围', tone: 'warning' },
+      { at: '19:41', text: '另收到 H1/H2/H3 雨后积水暂停通知：预计 20:30 恢复，若延迟将第一时间同步，请勿提前到场（R-WX-3）', tone: 'warning' }
     ]
   },
   {
@@ -453,6 +475,81 @@ export const BOOKINGS: Booking[] = [
       { at: '14:30', text: '阴天王动开灯', tone: 'info' },
       { at: '15:20', text: '队长点击"结束使用并关灯"，按实际 50 分钟结算', tone: 'success' },
       { at: '15:22', text: '押金 50 元扣除照明 40 元，退回 10 元（1–3 工作日到账）', tone: 'success' }
+    ]
+  },
+  {
+    id: 'B011',
+    code: '220718',
+    courtId: 'court-3',
+    halves: ['H3'],
+    scope: 'half',
+    date: TODAY,
+    start: '19:00',
+    end: '21:00',
+    headcount: 5,
+    acceptMerge: true,
+    teamName: '晚风女篮',
+    captainId: 'u-wan',
+    captainName: '万晴',
+    captainPhone: '132****3301',
+    fixedTeam: false,
+    credit: 97,
+    status: 'rainPause',
+    payStatus: 'depositPaid',
+    checkInCode: '220718',
+    lockerNos: [20],
+    lighting: { enabled: false, minutes: 0, fee: 0, deposit: 50 },
+    fees: [],
+    rainIncidentId: 'I-007',
+    members: [
+      { id: 'm11-1', name: '万晴', phone: '132****3301', isCaptain: true, checkedIn: false },
+      { id: 'm11-2', name: '许岚', phone: '132****3302', isCaptain: false, checkedIn: false },
+      { id: 'm11-3', name: '苏晓', phone: '132****3303', isCaptain: false, checkedIn: false },
+      { id: 'm11-4', name: '丁宁', phone: '132****3304', isCaptain: false, checkedIn: false },
+      { id: 'm11-5', name: '何苗', phone: '132****3305', isCaptain: false, checkedIn: false }
+    ],
+    timeline: [
+      { at: '09:40', text: '预约成功（接受拼场），已支付照明押金 50 元', tone: 'success' },
+      { at: '19:40', text: '三号场 H3 雨后积水暂停：全队尚未到场，收到改约窗口通知（19:55 前四选一，R-WX-3），无需赶路', tone: 'warning' }
+    ]
+  },
+  {
+    id: 'B012',
+    code: '220835',
+    courtId: 'court-3',
+    halves: ['H4'],
+    scope: 'half',
+    date: TODAY,
+    start: '19:00',
+    end: '21:00',
+    actualStart: '19:03',
+    headcount: 5,
+    acceptMerge: true,
+    teamName: '夜训小组',
+    captainId: 'u-ye',
+    captainName: '叶爽',
+    captainPhone: '131****4401',
+    fixedTeam: false,
+    credit: 93,
+    status: 'ongoing',
+    payStatus: 'depositPaid',
+    checkInCode: '220835',
+    lockerNos: [9],
+    lighting: { enabled: true, onAt: '19:05', minutes: 0, fee: 0, deposit: 50 },
+    fees: [
+      { kind: 'lighting', label: '照明费（实时累计，拼场 8 折）', amount: 0, ruleId: 'R-LIGHT-1' }
+    ],
+    members: [
+      { id: 'm12-1', name: '叶爽', phone: '131****4401', isCaptain: true, checkedIn: true, checkInAt: '19:03' },
+      { id: 'm12-2', name: '夏雨', phone: '131****4402', isCaptain: false, checkedIn: true, checkInAt: '19:04' },
+      { id: 'm12-3', name: '丁一', phone: '131****4403', isCaptain: false, checkedIn: true, checkInAt: '19:06' },
+      { id: 'm12-4', name: '常乐', phone: '131****4404', isCaptain: false, checkedIn: true, checkInAt: '19:08' },
+      { id: 'm12-5', name: '罗浩', phone: '131****4405', isCaptain: false, checkedIn: false }
+    ],
+    timeline: [
+      { at: '09:55', text: '预约成功（接受拼场），预付照明押金 50 元', tone: 'success' },
+      { at: '19:05', text: '签到 4/5，照明开启', tone: 'success' },
+      { at: '19:40', text: '邻场 H1/H2/H3 积水暂停，本半场 H4 未受影响；管理员询问是否接受受影响队伍半场拼场', tone: 'warning' }
     ]
   }
 ]
@@ -548,9 +645,35 @@ export const INCIDENTS: Incident[] = [
     source: '街道办事处活动通知',
     time: '19:30',
     status: 'open',
+    affectedHalves: ['H3', 'H4'],
+    slotStart: '21:00',
+    slotEnd: '22:30',
     actions: [
       { at: '19:30', by: 'worker', text: '林芳录入街道通知并通知管理员审核' }
     ]
+  },
+  {
+    id: 'I-007',
+    type: 'rain',
+    courtId: 'court-3',
+    bookingIds: ['B003', 'B011'],
+    title: '雨后三号场 H1/H2/H3 积水暂停 · 改约窗口 19:55 截止',
+    desc: '19:40 阵雨骤停，管理员老周巡查发现河滨公园灯光球场 H1/H2/H3 半场地面积水（排水口落叶堵塞），H4 无积水可正常使用。已发布暂停通知并关灯冻结照明计时，现公示该时段预约队伍、已支付照明费、可替代场地，队长须在 19:55 前完成四选一；烈风队 9 人已到场热身，需点验到场人数与等待时长。',
+    source: '管理员现场巡查（老周）+ 气象雷达回波',
+    time: '19:40',
+    status: 'mediating',
+    affectedHalves: ['H1', 'H2', 'H3'],
+    slotStart: '19:00',
+    slotEnd: '21:00',
+    chooseDeadline: '19:55',
+    recoverEta: '20:30',
+    actions: [
+      { at: '19:40', by: 'admin', text: '老周巡查发现 H1/H2/H3 积水，现场摆放警示牌并发布暂停使用通知（R-WX-3）；进行中烈风队照明已关灯、计时冻结' },
+      { at: '19:40', by: 'admin', text: '系统自动关联该时段受影响队伍：烈风队（B003 全场 H1/H2，已到场）、晚风女篮（B011 H3，未到场）；同场夜训小组（B012 H4）不受影响，可作半场拼场候选' },
+      { at: '19:41', by: 'admin', text: '推送通知到两队全体队员、已拼入队员及散客申请者（含王同学等 2 人的 MR-4 拼场申请），同步可替代场地与改约窗口，未到场者无需赶路' },
+      { at: '19:42', by: 'admin', text: '现场点验烈风队：到场热身 9 人，暂停发布时间 19:40 起记录等待时长；等待补偿将区别于完全未到场的晚风女篮' }
+    ],
+    ruleApplied: ['R-WX-3']
   }
 ]
 
@@ -585,5 +708,15 @@ export const MERGE_REQUESTS: MergeRequest[] = [
     status: 'rejected',
     unreasonable: true,
     time: '17:52'
+  },
+  {
+    id: 'MR-4',
+    bookingId: 'B003',
+    walkerName: '王同学',
+    walkerPhone: '150****3321',
+    people: 2,
+    message: '我和同学两人，看到烈风队接受拼场，想拼 19:00–21:00 全场',
+    status: 'pending',
+    time: '19:25'
   }
 ]

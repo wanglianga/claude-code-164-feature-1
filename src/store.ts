@@ -1,10 +1,14 @@
 import { computed, reactive, ref } from 'vue'
 import type {
   Booking, Court, FeeItem, Incident, IncidentAction, IncidentStatus,
-  IncidentType, Member, MergeRequest, RoleId, Scope, TimelineEvent
+  IncidentType, Member, MergeRequest, RainOption, RoleId, Scope, TimelineEvent
 } from './types'
 import { BOOKINGS, COURTS, INCIDENTS, MERGE_REQUESTS, NOW_HM, ROLES, TODAY } from './data/mock'
-import { checkedInCount, feeSummary, hm, lightQuote } from './lib/engine'
+import {
+  checkedInCount, feeSummary, hm, lightQuote,
+  rainAffectedBookings, rainOptionPlan, rainUpcomingBookings, rainWaitTier, rainWindowLeft
+} from './lib/engine'
+import type { RainAltSlot } from './lib/engine'
 
 // ---------- 模拟时钟 ----------
 const nowStr = ref(NOW_HM)
@@ -66,7 +70,7 @@ export function setRole(r: RoleId) {
   state.role = r
 }
 
-const idCounters: Record<string, number> = { B: 10, 'MR-': 3, I: 6 }
+const idCounters: Record<string, number> = { B: 12, 'MR-': 4, I: 7 }
 function nextId(prefix: string, pad = 3) {
   const n = (idCounters[prefix] = (idCounters[prefix] ?? 0) + 1)
   return `${prefix}${String(n).padStart(pad, '0')}`
@@ -432,7 +436,9 @@ export function issueSealOrder(id: string, reason: string, recoverAt: string) {
     ? state.bookings.filter(x => x.courtId === court.id && ['booked', 'ongoing', 'late', 'overtime'].includes(x.status))
     : state.bookings.filter(x => x.courtId === court.id &&
         ['booked', 'ongoing', 'late', 'overtime'].includes(x.status) &&
-        x.halves.some(h => linkedHalves.includes(h)))
+        x.halves.some(h => linkedHalves.includes(h)) &&
+        // 工单标注了封场时段时，仅中止时段重叠的预约（21:00 正好结束的场次不受影响）
+        (!inc.slotStart || !inc.slotEnd || (hm(x.start) < hm(inc.slotEnd) && hm(x.end) > hm(inc.slotStart))))
   for (const b of targets) {
     if (b.lighting.enabled) {
       b.lighting.offAt = nowStr.value
@@ -491,6 +497,249 @@ export function adminReschedule(bookingId: string, newStart: string, newEnd: str
   tl(b, `管理员改约 ${newStart}–${newEnd}：${reason}；补偿 ${compensate} 元、新时段优先排位（R-FAIR-4）`, 'warning')
 }
 
+// ---------- 雨后积水暂停 / 改约窗口（R-WX-3） ----------
+const TOMORROW = '2026-09-28'
+
+function rainIncidentOf(b: Booking) {
+  return b.rainIncidentId ? state.incidents.find(i => i.id === b.rainIncidentId) : undefined
+}
+
+/** 冻结进行中场次的照明（暂停发布时关灯，暂停时长不计费） */
+function freezeLighting(b: Booking, at: string) {
+  if (b.lighting.enabled && !b.lighting.offAt) {
+    b.lighting.offAt = at
+    tl(b, `照明已关灯，${at} 起计时冻结，暂停期间不计照明费（R-WX-3）`, 'info')
+  }
+}
+
+/** 与该预约相关的拼场申请（含已拼入/待处理），用于同步散客 */
+function mergeRequestsOfBooking(bookingId: string) {
+  return state.mergeRequests.filter(r => r.bookingId === bookingId)
+}
+
+export interface RainSuspensionInput {
+  courtId: string
+  halves: string[]
+  slotStart: string
+  slotEnd: string
+  chooseDeadline: string
+  recoverEta: string
+  desc: string
+}
+
+/** 管理员巡查发布积水暂停：自动关联该时段队伍、冻结照明、通知队员与散客 */
+export function publishRainSuspension(input: RainSuspensionInput): Incident {
+  const c = state.courts.find(x => x.id === input.courtId)!
+  c.puddleHalves = [...new Set([...(c.puddleHalves ?? []), ...input.halves])]
+  const scope = { courtId: input.courtId, halves: input.halves, slotStart: input.slotStart, slotEnd: input.slotEnd }
+  const affected = rainAffectedBookings(scope, state.bookings)
+  const upcoming = rainUpcomingBookings(scope, state.bookings)
+
+  const inc: Incident = {
+    id: nextId('I-'),
+    type: 'rain',
+    courtId: input.courtId,
+    bookingIds: affected.map(b => b.id),
+    title: `雨后${c.name.replace('河滨公园灯光球场', '三号场')} ${input.halves.join('/')} 积水暂停 · 改约窗口 ${input.chooseDeadline} 截止`,
+    desc: input.desc,
+    source: '管理员现场巡查',
+    time: nowStr.value,
+    status: 'mediating',
+    actions: [],
+    ruleApplied: ['R-WX-3'],
+    affectedHalves: input.halves,
+    slotStart: input.slotStart,
+    slotEnd: input.slotEnd,
+    chooseDeadline: input.chooseDeadline,
+    recoverEta: input.recoverEta
+  }
+  state.incidents.unshift(inc)
+  act(inc, 'admin', `巡查确认 ${input.halves.join('/')} 积水，发布暂停使用通知（R-WX-3），预计 ${input.recoverEta} 恢复；已摆放警示牌`)
+  act(inc, 'admin', `系统自动关联该时段（${input.slotStart}–${input.slotEnd}）受影响队伍：${affected.length ? affected.map(b => `${b.teamName}（${b.id}）`).join('、') : '无'}`)
+
+  for (const b of affected) {
+    b.status = 'rainPause'
+    b.rainIncidentId = inc.id
+    freezeLighting(b, nowStr.value)
+    // 已到场的进行中队伍，默认把签到人数作为现场点验初值，管理员可修正
+    if (hm(b.actualStart ?? b.start) <= hm(nowStr.value) && checkedInCount(b) > 0 && !b.arrival) {
+      b.arrival = { recordedAt: nowStr.value, presentCount: checkedInCount(b), warming: true, pausedAt: nowStr.value }
+    }
+    tl(b, `场地积水暂停：请在 ${input.chooseDeadline} 前选择 ①全额退款 ②顺延 ③改到室内场 ④接受半场拼场，结果将同步队员与散客（R-WX-3）`, 'error')
+    for (const r of mergeRequestsOfBooking(b.id)) {
+      notify('walkin', `你申请/拼入的 ${b.teamName} 因场地积水暂停，队长安置结果会立刻通知你，请勿白跑（工单 ${inc.id}）`)
+    }
+  }
+  for (const u of upcoming) {
+    tl(u, `场地 ${input.halves.join('/')} 积水暂停中（预计 ${input.recoverEta} 恢复），若影响你的时段将第一时间通知，暂无需赶路（R-WX-3）`, 'warning')
+  }
+  notify('all', `${c.name} ${input.halves.join('/')} 雨后积水暂停使用，预计 ${input.recoverEta} 恢复；在封时段队伍正在改约窗口内选择安置方案（R-WX-3）`)
+  return inc
+}
+
+/** 管理员现场点验到场人数 / 是否热身 / 开始等待计时 */
+export function recordArrival(bookingId: string, presentCount: number, warming: boolean) {
+  const b = state.bookings.find(x => x.id === bookingId)!
+  const inc = rainIncidentOf(b)
+  const pausedAt = inc?.time ?? nowStr.value
+  b.arrival = { recordedAt: nowStr.value, presentCount, warming, pausedAt }
+  const text = `管理员现场点验：${warming ? '已到场热身' : '已到场未热身'} ${presentCount} 人，等待自 ${pausedAt} 起计；补偿将区别于完全未到场的预约（R-WX-3）`
+  tl(b, text, 'warning')
+  if (inc) act(inc, 'admin', `${b.teamName}：${text}`)
+}
+
+/** 把原预约的拼场申请转挂到新场次（顺延/室内/拼场），同步散客避免到场扑空 */
+function transferMergeRequests(oldId: string, newBookingId: string | undefined, note: string) {
+  for (const r of mergeRequestsOfBooking(oldId)) {
+    r.superseded = true
+    r.supersededNote = note
+    if (newBookingId) r.bookingId = newBookingId
+    notify('walkin', `拼场安排更新：${note}（你的申请 ${r.id} 已同步）`)
+  }
+}
+
+/** 复制队员到新预约（顺延/室内），签到状态清零 */
+function cloneMembers(b: Booking) {
+  return b.members.map((m, i) => ({
+    id: `m-rain-${b.id}-${i}`,
+    name: m.name,
+    phone: m.phone,
+    isCaptain: m.isCaptain,
+    checkedIn: false,
+    minor: m.minor
+  }))
+}
+
+export interface ChooseResult {
+  newBooking?: Booking
+  plan: ReturnType<typeof rainOptionPlan>
+}
+
+/** 队长四选一：退款 / 顺延 / 改室内 / 接受半场拼场；结果同步队员与散客 */
+export function chooseRainOption(bookingId: string, option: RainOption, slot?: RainAltSlot): ChooseResult {
+  const b = state.bookings.find(x => x.id === bookingId)!
+  const court = state.courts.find(c => c.id === b.courtId)!
+  const inc = rainIncidentOf(b)
+  // 发布时已关灯；兜底再冻结一次，并移除实时照明占位费（暂停前照明费免收）
+  freezeLighting(b, inc?.time ?? nowStr.value)
+  b.fees = b.fees.filter(f => f.kind !== 'lighting')
+
+  const plan = rainOptionPlan(b, option, court, nowStr.value)
+  const withinWindow = (rainWindowLeft(inc?.chooseDeadline, nowStr.value) ?? 0) >= 0
+  let newBooking: Booking | undefined
+  let summary = plan.summary
+
+  if (option === 'refund') {
+    b.status = 'cancelled'
+    b.payStatus = 'refunded'
+    b.fees.push({ kind: 'rainRefund', label: '雨后积水暂停 · 照明押金全额退回', amount: -plan.refund, ruleId: 'R-WX-3' })
+    if (plan.compensation > 0) {
+      b.fees.push({ kind: 'rainWait', label: `到场等待 ${rainWaitTier(b, nowStr.value)?.waited ?? 0} 分钟 · 安抚补偿`, amount: -plan.compensation, ruleId: 'R-WX-3', note: plan.vouchers ? '另赠同时长免费券 1 张' : undefined })
+    }
+    transferMergeRequests(b.id, undefined, `${b.teamName} 选择全额退款，原拼场安排取消，押金已原路退回`)
+  } else if (option === 'halfMerge' && slot?.partner) {
+    const partner = state.bookings.find(x => x.id === slot.key.replace('merge-', ''))!
+    // 全队并入搭档队伍，共享一个可用半场；押金平移到拼场场次担保
+    for (const m of b.members) {
+      partner.members.push({ id: `m-rainmerge-${++seq.member}`, name: m.name, phone: m.phone, isCaptain: false, checkedIn: false, minor: m.minor })
+    }
+    partner.headcount = partner.members.length
+    partner.lighting.deposit += b.lighting.deposit
+    b.lighting.deposit = 0
+    b.status = 'rescheduled'
+    b.payStatus = 'paid'
+    b.adminNote = `积水暂停后接受半场拼场：全队并入 ${partner.teamName}（${slot.courtName} ${slot.halves.join('/')} ${slot.start}–${slot.end}），照明押金 ¥${b.lighting.deposit} 已平移，拼场照明 8 折。`
+    summary = `${plan.summary}；全队并入 ${partner.teamName} 共用 ${slot.halves.join('/')}（到场凭新签到码 ${partner.checkInCode}）`
+    tl(partner, `${b.teamName} 因原半场积水暂停，全队 ${b.members.length} 人并入本队半场拼场，押金共同担保、照明 8 折按签到人数平摊（R-WX-3）`, 'success')
+    transferMergeRequests(b.id, partner.id, `${b.teamName} 已并入 ${partner.teamName} 的 ${slot.halves.join('/')} 半场，申请自动转挂，到场凭码 ${partner.checkInCode}`)
+  } else if (option === 'postpone' || option === 'indoor') {
+    if (!slot) throw new Error('顺延/室内方案需要选择具体时段')
+    const targetCourt = state.courts.find(c => c.id === slot.courtId)!
+    const date = slot.key === 'postpone-tomorrow' ? TOMORROW : TODAY
+    const nb: Booking = {
+      id: nextId('B'),
+      code: String(100000 + Math.floor(Math.random() * 899999)),
+      courtId: targetCourt.id,
+      halves: slot.halves.length ? slot.halves : b.halves,
+      scope: slot.halves.length >= 2 ? 'full' : b.scope === 'full' ? 'full' : 'half',
+      date,
+      start: slot.start,
+      end: slot.end,
+      headcount: b.members.length,
+      acceptMerge: b.acceptMerge,
+      teamName: b.teamName + (option === 'indoor' ? '（雨天室内安置）' : '（积水顺延）'),
+      captainId: b.captainId,
+      captainName: b.captainName,
+      captainPhone: b.captainPhone,
+      members: cloneMembers(b),
+      status: 'booked',
+      payStatus: 'depositPaid',
+      checkInCode: '',
+      lighting: { enabled: false, minutes: 0, fee: 0, deposit: b.lighting.deposit },
+      fees: [],
+      fixedTeam: b.fixedTeam,
+      credit: b.credit,
+      rescheduledFromId: b.id,
+      adminNote: `雨后积水安置（R-WX-3）：${option === 'indoor' ? '改到室内场馆' : '顺延'}，${slot.courtName} ${slot.halves.join('/')} ${slot.start}–${slot.end}，优先排位，照明押金 ¥${b.lighting.deposit} 已平移。`,
+      timeline: []
+    }
+    nb.checkInCode = nb.code
+    tl(nb, `由原预约 ${b.id} 雨后积水安置${option === 'indoor' ? '改到室内场馆' : '顺延'}：${targetCourt.name} ${nb.halves.join('/')} ${nb.start}–${nb.end}，优先排位，押金已平移（R-WX-3）`, 'success')
+    state.bookings.push(nb)
+    newBooking = nb
+    b.status = 'rescheduled'
+    b.payStatus = 'paid'
+    b.lighting.deposit = 0
+    b.adminNote = nb.adminNote
+    summary = `${plan.summary}；新签到码 ${nb.code}，${targetCourt.name} ${nb.halves.join('/')} ${nb.date} ${nb.start}–${nb.end}`
+    transferMergeRequests(b.id, nb.id, `${b.teamName} 已${option === 'indoor' ? '改到室内场馆' : '顺延'}至 ${targetCourt.name} ${nb.start}–${nb.end}，申请自动转挂到新场次（签到码 ${nb.code}）`)
+  }
+
+  if (plan.compensation > 0 && option !== 'refund') {
+    b.fees.push({ kind: 'rainWait', label: `到场等待 ${rainWaitTier(b, nowStr.value)?.waited ?? 0} 分钟 · 安抚补偿`, amount: -plan.compensation, ruleId: 'R-WX-3', note: plan.vouchers ? '另赠同时长免费券 1 张' : undefined })
+  }
+  if (plan.vouchers) {
+    tl(b, '已赠送同时长免费券 1 张（7 天内有效），可在下次预约时抵扣', 'success')
+  }
+
+  b.rainChoice = {
+    option,
+    at: nowStr.value,
+    newBookingId: newBooking?.id ?? (option === 'halfMerge' && slot ? state.bookings.find(x => x.id === slot.key.replace('merge-', ''))?.id : undefined),
+    summary,
+    refundAmount: plan.refund,
+    waitCompensation: plan.compensation,
+    vouchers: plan.vouchers,
+    withinWindow
+  }
+  const optionLabel = { refund: '全额退款', postpone: '顺延新时段', indoor: '改到室内场馆', halfMerge: '接受半场拼场' }[option]
+  tl(b, `队长选择「${optionLabel}」${withinWindow ? '' : '（已超过改约窗口，按队长确认的方案补登并留痕）'}：${summary}`, 'success')
+  if (inc) {
+    act(inc, 'admin', `${b.teamName} 队长已选择「${optionLabel}」，选择结果已同步全体队员与散客申请者；${summary}`)
+    const pending = inc.bookingIds.filter(id => {
+      const x = state.bookings.find(bk => bk.id === id)
+      return x && !x.rainChoice
+    })
+    if (pending.length === 0) {
+      inc.status = 'resolved'
+      inc.penalty = '无（场地方/天气责任）：全部受影响队伍完成安置，押金平移或全额退回，到场队伍按等待时长补偿'
+      act(inc, 'admin', '全部受影响队伍已在改约窗口内完成安置，工单办结；恢复时间到达后管理员复查场地并解除暂停')
+    }
+  }
+  notify('all', `${b.teamName} 积水安置结果：${optionLabel}。队员与散客请按新安排行动，无需再到原半场（R-WX-3）`)
+  return { newBooking, plan }
+}
+
+/** 管理员复查确认积水清除，解除半场暂停 */
+export function recoverRain(incidentId: string) {
+  const inc = state.incidents.find(x => x.id === incidentId)!
+  const c = state.courts.find(x => x.id === inc.courtId)!
+  c.puddleHalves = (c.puddleHalves ?? []).filter(h => !inc.affectedHalves?.includes(h))
+  if (c.puddleHalves.length === 0 && c.surface === 'good') c.puddleHalves = []
+  act(inc, 'admin', `现场复查：${inc.affectedHalves?.join('/')} 积水已清除、地面恢复干燥，解除暂停并公示；后续时段恢复正常使用（R-WX-3）`)
+  notify('all', `${c.name} ${inc.affectedHalves?.join('/')} 积水已清除，恢复正常开放（R-WX-3）`)
+}
+
 // ---------- 选择器 ----------
 export function courtById(id: string) {
   return state.courts.find(c => c.id === id)!
@@ -500,7 +749,10 @@ export function bookingById(id: string) {
 }
 export function lightLive(b: Booking) {
   const court = state.courts.find(c => c.id === b.courtId)
-  const faultIncident = state.incidents.some(i => i.type === 'lightFault' && i.bookingIds.includes(b.id) && (i.status === 'open' || i.status === 'mediating'))
-  return lightQuote(b, court, nowStr.value, faultIncident)
+  const faultIncident = state.incidents.some(i =>
+    (i.type === 'lightFault' || i.type === 'rain') &&
+    i.bookingIds.includes(b.id) && (i.status === 'open' || i.status === 'mediating'))
+  const frozen = faultIncident || b.status === 'rainPause'
+  return lightQuote(b, court, nowStr.value, frozen)
 }
 export { feeSummary }

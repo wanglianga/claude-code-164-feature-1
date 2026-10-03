@@ -1,0 +1,8 @@
+services:
+  court-booking:
+    build: .
+    image: court-booking:latest
+    container_name: court-booking-h5
+    ports:
+      - "8080:80"
+    restart: unless-stopped

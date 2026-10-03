@@ -128,8 +128,8 @@ const progress = computed(() => {
         </span>
       </div>
       <div v-if="light" class="fee-line fee-light-live">
-        <span>照明实时累计 <RuleLink id="R-LIGHT-1" /></span>
-        <span style="color:#e8840c;font-weight:700">¥{{ money(light.fee) }}</span>
+        <span>照明{{ light.frozen ? '暂停前累计（已冻结，安置时免收）' : '实时累计' }} <RuleLink id="R-LIGHT-1" /></span>
+        <span :style="{ color: light.frozen ? '#999' : '#e8840c', fontWeight: 700 }">¥{{ money(light.fee) }}</span>
       </div>
       <div class="fee-line fee-total">
         <span>当前应计合计 / 押金</span>
@@ -142,6 +142,21 @@ const progress = computed(() => {
 
     <div v-if="booking.adminNote" class="bc-admin-note">
       <b>管理员说明：</b>{{ booking.adminNote }}
+    </div>
+
+    <!-- 雨后积水暂停 -->
+    <div v-if="booking.status === 'rainPause' || booking.rainChoice" class="bc-rain">
+      <template v-if="booking.rainChoice">
+        <div class="bcr-title">🌧️ 雨后积水已安置（<RuleLink id="R-WX-3" />）</div>
+        <div>{{ booking.rainChoice.summary }}</div>
+      </template>
+      <template v-else>
+        <div class="bcr-title">🌧️ 雨后积水暂停 · 等待队长安置（<RuleLink id="R-WX-3" />）</div>
+        <div>照明计时已冻结；可全额退款、顺延、改室内场或接受半场拼场，结果同步队员与散客。</div>
+        <div v-if="booking.arrival" style="margin-top:2px">
+          🟠 已到场热身 {{ booking.arrival.presentCount }} 人，等待补偿将区别于完全未到场的预约。
+        </div>
+      </template>
     </div>
 
     <div v-if="$slots.actions" class="bc-actions">
@@ -198,6 +213,8 @@ const progress = computed(() => {
 .fee-light-live { color:#e8840c; }
 .fee-total { border-top:1px solid #f0f0f0; padding-top:6px; margin-top:6px; font-size:13px; }
 .bc-admin-note { background:#fff7e6; border:1px solid #ffe7ba; border-radius:8px; padding:8px; font-size:12px; line-height:1.7; margin-top:8px; color:#7a4d00; }
+.bc-rain { background:linear-gradient(135deg,#fff1f0,#fff7e6); border:1px solid #ffccc7; border-radius:8px; padding:8px 10px; font-size:12px; line-height:1.7; margin-top:8px; color:#7a1f1f; }
+.bcr-title { font-weight:700; color:#cf1322; margin-bottom:2px; }
 .bc-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
 .tl { position:relative; padding-left:4px; }
 .tl-item { position:relative; padding-left:16px; font-size:12px; line-height:1.8; color:#444; }

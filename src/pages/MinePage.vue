@@ -13,12 +13,37 @@ import type { Booking, MergeRequest } from '../types'
 import BookingCard from '../components/BookingCard.vue'
 import BottomSheet from '../components/BottomSheet.vue'
 import RuleLink from '../components/RuleLink.vue'
+import { openIncidents } from '../lib/ui'
 
 const state = useState()
 const message = useMessage()
 
 const isCaptain = computed(() => state.role === 'captain')
 const isWalkin = computed(() => state.role === 'walkin')
+
+// 雨后积水暂停、待安置的队伍（演示环境队长可体验全部受影响队伍的四选一）
+const rainPausedTeams = computed<Booking[]>(() =>
+  state.bookings
+    .filter(b => b.status === 'rainPause' || (b.rainChoice && b.status !== 'booked' && b.rainIncidentId))
+    .filter(b => b.rainIncidentId)
+    .sort((a, b) => hm(a.start) - hm(b.start)))
+function rainIncident(b: Booking) {
+  return state.incidents.find(i => i.id === b.rainIncidentId)
+}
+function rainDeadline(b: Booking) {
+  return rainIncident(b)?.chooseDeadline ?? '—'
+}
+function rainPaid(b: Booking) {
+  const c = state.courts.find(x => x.id === b.courtId)
+  const light = b.lighting.fee || 0
+  return (b.lighting.deposit + light).toFixed(light ? 2 : 0).replace(/\.00$/, '')
+}
+function waitedMin(b: Booking) {
+  if (!b.arrival) return 0
+  const [ph, pm] = b.arrival.pausedAt.split(':').map(Number)
+  const [nh, nm] = nowStr.value.split(':').map(Number)
+  return Math.max(0, nh * 60 + nm - (ph * 60 + pm))
+}
 
 // 队长视角：陈晨（演示）或新建预约（captainId u-me）
 const myBookings = computed<Booking[]>(() =>
@@ -124,6 +149,19 @@ function courtName(id: string) { return state.courts.find(c => c.id === id)?.nam
         <div style="font-size:12px">你是队长：可<b>邀请队员、处理拼场申请、管理签到、开关照明并结算</b>。签到码展示在每张卡片的时间线标题中。</div>
       </NAlert>
 
+      <!-- 雨后积水暂停安置入口 -->
+      <div v-for="b in rainPausedTeams" :key="'rain-' + b.id" class="rain-banner">
+        <div class="rb-title">🌧️ {{ b.teamName}} 所在半场雨后积水暂停</div>
+        <div class="rb-line">
+          改约窗口 <b>{{ rainDeadline(b) }}</b> 截止 · 已付照明费/押金 ¥{{ rainPaid(b) }} ·
+          到场{{ b.arrival ? `热身 ${b.arrival.presentCount} 人、等待 ${waitedMin(b)} 分钟` : '队伍尚未登记到场' }}
+        </div>
+        <div class="rb-line">请尽快选择 <b>退款 / 顺延 / 改室内场 / 半场拼场</b>，结果会同步队员与散客申请者 <RuleLink id="R-WX-3" /></div>
+        <NButton size="small" type="error" round style="margin-top:6px" @click="openIncidents('rain')">
+          前往改约窗口处理（{{ b.rainChoice ? '已完成，查看结果' : '待选择' }}）
+        </NButton>
+      </div>
+
       <!-- 待处理拼场申请 -->
       <div v-if="pendingRequests.length" class="section-title">
         <NBadge :value="pendingRequests.length" type="warning" processing />
@@ -197,6 +235,25 @@ function courtName(id: string) { return state.courts.find(c => c.id === id)?.nam
         <NInput v-model:value="codeForm.code" placeholder="输入队长给的 6 位签到码" maxlength="6"
           style="flex:1" :input-props="{ inputmode: 'numeric' }" />
         <NButton type="primary" round @click="doCodeCheckIn">签到</NButton>
+      </div>
+
+      <!-- 我的拼场申请进度（积水暂停等会自动同步，避免到场扑空） -->
+      <div v-if="myApplications.length" class="section-title">我的拼场申请进度（{{ myApplications.length }}）</div>
+      <div v-for="r in myApplications" :key="r.id" class="appl-card"
+        :class="{ paused: r.superseded, rejected: r.status === 'rejected' && !r.superseded }">
+        <div class="ap-top">
+          <b>🙋 {{ r.walkerName }} 等 {{ r.people }} 人 → {{ state.bookings.find(b => b.id === r.bookingId)?.teamName ?? '原队伍' }}</b>
+          <NTag v-if="r.superseded" size="tiny" type="success" round>场地变更·已同步</NTag>
+          <NTag v-else-if="r.status === 'accepted'" size="tiny" type="success" round>已通过</NTag>
+          <NTag v-else-if="r.status === 'rejected'" size="tiny" :type="r.unreasonable ? 'error' : 'default'" round>被拒绝</NTag>
+          <NTag v-else size="tiny" type="warning" round>待队长处理</NTag>
+        </div>
+        <div v-if="r.superseded" class="ap-line">🌧️ 原场地雨后积水暂停：{{ r.supersededNote }}</div>
+        <div v-else-if="r.status === 'accepted'" class="ap-line">
+          ✅ 已通过，到场凭签到码 {{ state.bookings.find(b => b.id === r.bookingId)?.checkInCode }} 签到
+        </div>
+        <div v-else-if="r.status === 'rejected'" class="ap-line">{{ r.unreasonable ? '对方无理由拒拼已被计资源占用费，可改找其他队伍' : '对方有正当理由，可改找其他队伍' }}</div>
+        <div v-else class="ap-line">⏳ 队长须在申请后 10 分钟内处理；若遇场地异常，安置结果会第一时间同步给你</div>
       </div>
 
       <div class="section-title">找拼场（{{ mergeable.length }} 场可申请）</div>
@@ -313,6 +370,14 @@ function courtName(id: string) { return state.courts.find(c => c.id === id)?.nam
 
 <style scoped>
 .section-title { font-size:13px; font-weight:700; color:#555; margin:12px 2px 8px; display:flex; align-items:center; }
+.rain-banner { background:linear-gradient(135deg,#fff1f0,#fff7e6); border:1px solid #ffccc7; border-radius:12px; padding:10px 12px; margin-bottom:10px; font-size:12.5px; line-height:1.8; }
+.rb-title { font-weight:800; color:#cf1322; font-size:13.5px; }
+.rb-line { color:#7a4d00; }
+.appl-card { background:#fff; border-radius:10px; padding:9px 11px; margin-bottom:8px; box-shadow:0 1px 3px rgba(0,0,0,.05); border-left:3px solid #faad14; }
+.appl-card.paused { border-left-color:#18a058; background:#f6ffed; }
+.appl-card.rejected { border-left-color:#d9d9d9; opacity:.9; }
+.ap-top { display:flex; justify-content:space-between; align-items:center; gap:6px; font-size:13px; }
+.ap-line { font-size:12px; color:#555; margin-top:4px; line-height:1.7; }
 .merge-req { background:#fff; border:1px solid #ffe7ba; border-radius:12px; padding:10px 12px; margin-bottom:10px; }
 .mr-head { display:flex; justify-content:space-between; align-items:center; }
 .mr-team { font-size:12px; color:#666; margin:4px 0; }

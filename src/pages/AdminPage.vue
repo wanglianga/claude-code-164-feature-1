@@ -2,13 +2,13 @@
 import { computed, ref } from 'vue'
 import {
   NButton, NTag, NAlert, NGrid, NGridItem, NSelect, NInput, NInputNumber, NPopconfirm,
-  NRadioGroup, NRadio, NForm, NFormItem, useMessage
+  NRadioGroup, NRadio, NForm, NFormItem, NCheckbox, NCheckboxGroup, useMessage
 } from 'naive-ui'
 import {
-  useState, nowStr, releaseBooking, endUsage, setSurface, adminReschedule
+  useState, nowStr, releaseBooking, endUsage, setSurface, adminReschedule, publishRainSuspension
 } from '../store'
 import {
-  STATUS_META, PAY_META, bookingRisk, checkedInCount, hm, isActive, money,
+  STATUS_META, PAY_META, bookingRisk, checkedInCount, hm, hmLabel, isActive, money,
   feeSummary, timeState
 } from '../lib/engine'
 import type { Booking, SurfaceStatus } from '../types'
@@ -41,9 +41,9 @@ function rowsOf(slot: string) {
 function courtName(id: string) { return state.courts.find(c => c.id === id)!.name.replace('滨江社区篮球场 · ', '').replace('河滨公园灯光球场', '河滨') }
 
 const totals = computed(() => {
-  const act = state.bookings.filter(b => isActive(b, nowStr.value))
+  const act = state.bookings.filter(b => isActive(b, nowStr.value) || b.status === 'rainPause')
   return {
-    booked: state.bookings.filter(b => ['booked', 'ongoing', 'late', 'overtime'].includes(b.status)).length,
+    booked: state.bookings.filter(b => ['booked', 'ongoing', 'late', 'overtime', 'rainPause'].includes(b.status)).length,
     present: act.reduce((s, b) => s + checkedInCount(b), 0),
     unpaid: state.bookings.filter(b => b.payStatus === 'unpaid' || b.payStatus === 'deducted').length,
     high: state.bookings.filter(b => bookingRisk(b, state.incidents, nowStr.value).level === 'high').length,
@@ -77,6 +77,52 @@ function toggleLightFault(courtId: string) {
   const c = state.courts.find(x => x.id === courtId)!
   c.lighting.status = c.lighting.status === 'fault' ? 'ok' : 'fault'
   message.success(c.lighting.status === 'fault' ? '已标记照明故障' : '照明已恢复')
+}
+
+// 巡查发现积水 → 发布暂停（自动关联该时段队伍并推送改约窗口）
+const showRainForm = ref(false)
+const rainForm = ref({
+  courtId: 'court-1',
+  halves: [] as string[],
+  slotStart: '18:00',
+  slotEnd: '20:00',
+  deadline: '19:57',
+  recoverEta: '20:30',
+  desc: '阵雨过后半场积水，排水中，暂停使用并启动改约窗口'
+})
+const rainCourt = computed(() => state.courts.find(c => c.id === rainForm.value.courtId))
+function openRainForm(courtId?: string) {
+  const c = state.courts.find(x => x.id === courtId) ?? state.courts[0]
+  const cur = hm(nowStr.value)
+  // 当前时间取整到最近的已开始两小时时段
+  const slotStartMin = Math.floor(cur / 120) * 120
+  rainForm.value = {
+    courtId: c.id,
+    halves: Object.keys(c.hoops).filter(h => !c.puddleHalves?.includes(h)).slice(0, 1),
+    slotStart: hmLabel(slotStartMin),
+    slotEnd: hmLabel(Math.min(slotStartMin + 120, 22 * 60)),
+    deadline: hmLabel(Math.min(cur + 15, 23 * 60 + 59)),
+    recoverEta: hmLabel(Math.min(cur + 48, 22 * 60)),
+    desc: '阵雨过后半场积水，排水中，暂停使用并启动改约窗口'
+  }
+  showRainForm.value = true
+}
+function submitRain() {
+  const f = rainForm.value
+  if (!f.halves.length) return message.warning('请至少选择一个积水半场')
+  if (hm(f.deadline) <= hm(nowStr.value)) return message.warning('选择截止时间需晚于当前时间')
+  publishRainSuspension({
+    courtId: f.courtId,
+    halves: f.halves,
+    slotStart: f.slotStart,
+    slotEnd: f.slotEnd,
+    chooseDeadline: f.deadline,
+    recoverEta: f.recoverEta,
+    desc: f.desc
+  })
+  showRainForm.value = false
+  message.success('积水暂停已发布：受影响队伍、照明费、替代场地与改约窗口已公示')
+  openIncidents('rain')
 }
 
 // 改约
@@ -155,6 +201,8 @@ const fairness = computed(() => {
           </template>
         </div>
         <div class="ar-actions">
+          <NButton v-if="b.status === 'rainPause'" size="tiny" type="error" round
+            @click="openIncidents('rain')">🌧️ 积水改约窗口处置</NButton>
           <NButton v-if="b.status === 'booked' && timeState(b, nowStr).releasable" size="tiny" type="error" ghost round
             @click="releaseBooking(b.id)">释放（爽约处理）</NButton>
           <NPopconfirm v-if="isActive(b, nowStr)" @positive-click="endUsage(b.id, true)">
@@ -182,7 +230,10 @@ const fairness = computed(() => {
 
     <!-- 场地控制 -->
     <div class="venue-box">
-      <div class="fb-title">🎛️ 场地状态控制（现场核验后发布）</div>
+      <div class="fb-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>🎛️ 场地状态控制（现场核验后发布）</span>
+        <NButton size="tiny" type="error" round @click="openRainForm()">🌧️ 巡查发现积水·发布暂停</NButton>
+      </div>
       <div v-for="c in state.courts" :key="c.id" class="vc-court">
         <div class="vc-name">{{ c.name }}</div>
         <div class="vc-row">
@@ -195,6 +246,7 @@ const fairness = computed(() => {
           </NRadioGroup>
           <NButton size="tiny" type="primary" round style="margin-left:auto"
             @click="surfaceTarget = c.id; applySurface()">发布</NButton>
+          <NButton size="tiny" type="error" round @click="openRainForm(c.id)">积水暂停</NButton>
         </div>
         <div class="vc-row">
           <span style="font-size:12px;color:#666">篮筐：</span>
@@ -229,6 +281,42 @@ const fairness = computed(() => {
           <NInputNumber v-model:value="resForm.compensate" :min="0" style="width:100%" />
         </NFormItem>
         <NButton type="primary" block round @click="submitReschedule">确认改约并通知队长</NButton>
+      </NForm>
+    </BottomSheet>
+
+    <!-- 巡查发现积水：发布暂停抽屉 -->
+    <BottomSheet :show="showRainForm" title="🌧️ 巡查发现积水 · 发布暂停与改约窗口"
+      @update:show="v => !v && (showRainForm = false)">
+      <NForm v-if="rainCourt" label-placement="top" size="small">
+        <NAlert type="warning" style="margin-bottom:8px">
+          发布后系统自动关联该时段在积水半场的预约队伍，页面公示<b>队伍、已付照明费、可替代场地与选择截止时间</b>，
+          并通知全体队员与散客申请者；进行中场次照明立即关灯冻结。<RuleLink id="R-WX-3" />
+        </NAlert>
+        <NFormItem label="场地">
+          <NSelect v-model:value="rainForm.courtId"
+            :options="state.courts.map(c => ({ label: c.name + (c.puddleHalves?.length ? `（${c.puddleHalves.join('/')} 已暂停）` : ''), value: c.id }))" />
+        </NFormItem>
+        <NFormItem label="积水半场">
+          <NCheckboxGroup v-model:value="rainForm.halves">
+            <NCheckbox v-for="h in Object.keys(rainCourt.hoops)" :key="h" :value="h"
+              :disabled="rainCourt.puddleHalves?.includes(h)">{{ h }}{{ rainCourt.puddleHalves?.includes(h) ? '（已暂停）' : '' }}</NCheckbox>
+          </NCheckboxGroup>
+        </NFormItem>
+        <NFormItem label="受影响时段">
+          <NInput v-model:value="rainForm.slotStart" style="width:80px" /> -
+          <NInput v-model:value="rainForm.slotEnd" style="width:80px;margin-left:6px" />
+        </NFormItem>
+        <NFormItem label="队长安置选择截止（改约窗口）">
+          <NInput v-model:value="rainForm.deadline" style="width:120px" placeholder="如 19:57" />
+          <span style="font-size:11px;color:#999;margin-left:6px">建议发布后 15 分钟内</span>
+        </NFormItem>
+        <NFormItem label="预计恢复时间">
+          <NInput v-model:value="rainForm.recoverEta" style="width:120px" placeholder="如 20:30" />
+        </NFormItem>
+        <NFormItem label="现场情况说明（公示给市民）">
+          <NInput v-model:value="rainForm.desc" type="textarea" :rows="2" />
+        </NFormItem>
+        <NButton type="error" block round @click="submitRain">发布暂停并通知受影响队伍</NButton>
       </NForm>
     </BottomSheet>
   </div>

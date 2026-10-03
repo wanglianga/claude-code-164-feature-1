@@ -6,7 +6,7 @@ import {
   SURFACE_META, HOOP_META, bookingsOfHalf, checkedInCount, courtRisk,
   fmt, halfSealed, isActive, timeState
 } from '../lib/engine'
-import type { Booking, Court } from '../types'
+import type { Booking, Court, Incident } from '../types'
 import RiskTag from '../components/RiskTag.vue'
 import RuleLink from '../components/RuleLink.vue'
 import { openIncidents } from '../lib/ui'
@@ -20,6 +20,17 @@ function nextOf(c: Court, h: string): Booking | undefined {
   return bookingsOfHalf(c, h, state.bookings)
     .filter(b => b.status === 'booked')
     .sort((a, b) => a.start.localeCompare(b.start))[0]
+}
+/** 该半场进行中的积水暂停工单 */
+function rainOnHalf(c: Court, h: string): Incident | undefined {
+  return state.incidents.find(i =>
+    i.type === 'rain' && i.courtId === c.id && i.affectedHalves?.includes(h) &&
+    (i.status === 'open' || i.status === 'mediating'))
+}
+function rainTeams(inc: Incident, h: string): Booking[] {
+  return inc.bookingIds
+    .map(id => state.bookings.find(b => b.id === id))
+    .filter((b): b is Booking => !!b && b.halves.includes(h))
 }
 
 const stats = computed(() => {
@@ -75,11 +86,11 @@ function forceEnd(b: Booking) { endUsage(b.id, true) }
       <div v-if="c.sealed" class="seal-line">🚧 {{ c.sealReason }}</div>
 
       <div v-for="h in Object.keys(c.hoops)" :key="h" class="half-row"
-        :class="{ unusable: halfSealed(c, h) || c.hoops[h] !== 'normal' }">
+        :class="{ unusable: halfSealed(c, h) || c.hoops[h] !== 'normal', puddle: !!c.puddleHalves?.includes(h) }">
         <div class="hr-half">
           <div class="hr-h">{{ h }}</div>
-          <div class="hr-hoop" :class="halfSealed(c, h) ? 'hoop-sealed' : 'hoop-' + c.hoops[h]">
-            {{ halfSealed(c, h) ? '封停' : HOOP_META[c.hoops[h]].label }}
+          <div class="hr-hoop" :class="halfSealed(c, h) ? 'hoop-sealed' : c.puddleHalves?.includes(h) ? 'hoop-puddle' : 'hoop-' + c.hoops[h]">
+            {{ halfSealed(c, h) ? '封停' : c.puddleHalves?.includes(h) ? '积水暂停' : HOOP_META[c.hoops[h]].label }}
           </div>
         </div>
 
@@ -87,6 +98,26 @@ function forceEnd(b: Booking) { endUsage(b.id, true) }
           <div class="hr-off">{{ halfSealed(c, h) ? '封场不可用' : c.hoops[h] === 'maintaining' ? '篮筐维修中' : '篮筐封停' }}</div>
           <div v-if="halfSealed(c, h)" class="hr-rule">受影响队伍已全额退款、可免费改约优先排位 <RuleLink id="R-SEAL-1" /></div>
           <div v-else class="hr-rule">已预约队伍自动改约/退款 <RuleLink id="R-WX-2" /></div>
+        </div>
+
+        <!-- 雨后积水暂停 -->
+        <div v-else-if="rainOnHalf(c, h)" class="hr-body">
+          <div class="hr-puddle">🌧️ 雨后积水暂停 · 预计 {{ rainOnHalf(c, h)!.recoverEta }} 恢复</div>
+          <div v-for="b in rainTeams(rainOnHalf(c, h)!, h)" :key="b.id" class="hr-rain-team">
+            <span class="hr-team" style="font-size:13px">{{ b.teamName }}</span>
+            <NTag size="tiny" :type="b.rainChoice ? 'success' : 'error'" round>
+              {{ b.rainChoice ? '已安置' : `待选择·${rainOnHalf(c, h)!.chooseDeadline} 截止` }}
+            </NTag>
+            <span v-if="b.arrival" class="hr-rain-meta">到场热身 {{ b.arrival.presentCount }} 人</span>
+          </div>
+          <div class="hr-rule">四选一：退款 / 顺延 / 室内场 / 半场拼场，结果同步队员与散客
+            <NButton text size="tiny" type="error" @click="openIncidents('rain')">去处理 →</NButton>
+            <RuleLink id="R-WX-3" />
+          </div>
+        </div>
+        <div v-else-if="c.puddleHalves?.includes(h)" class="hr-body">
+          <div class="hr-puddle">🌧️ 半场积水中 · 等待复查恢复</div>
+          <div class="hr-rule">受影响队伍已完成安置，管理员复查确认积水清除后解除暂停 <RuleLink id="R-WX-3" /></div>
         </div>
 
         <div v-else-if="currentOf(c, h)" class="hr-body">
@@ -152,6 +183,8 @@ function forceEnd(b: Booking) { endUsage(b.id, true) }
 .seal-line { background:#fff1f0; color:#cf1322; border-radius:8px; padding:6px 8px; font-size:12px; margin:6px 0; }
 .half-row { display:flex; gap:10px; padding:10px 0; border-top:1px dashed #eee; }
 .half-row.unusable { opacity:.85; }
+.half-row.puddle { background:repeating-linear-gradient(45deg,#fff7e6,#fff7e6 8px,#fff 8px,#fff 16px); border-radius:8px; }
+.hoop-puddle { background:#fff1f0; color:#cf1322; }
 .hr-half { min-width:52px; text-align:center; }
 .hr-h { font-size:20px; font-weight:800; }
 .hr-hoop { font-size:11px; border-radius:6px; padding:1px 4px; margin-top:2px; }
@@ -167,6 +200,9 @@ function forceEnd(b: Booking) { endUsage(b.id, true) }
 .r-error { color:#d03050; }
 .hr-meta { font-size:12px; color:#888; margin-top:3px; }
 .hr-off { font-weight:700; color:#d03050; font-size:14px; }
+.hr-puddle { font-weight:700; color:#cf1322; font-size:13.5px; }
+.hr-rain-team { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-top:3px; }
+.hr-rain-meta { font-size:11.5px; color:#ad6800; }
 .hr-rule { font-size:12px; color:#999; margin-top:2px; }
 .hr-release { background:#fff7e6; border-radius:6px; padding:4px 6px; font-size:12px; color:#ad6800; margin-top:6px; display:flex; align-items:center; flex-wrap:wrap; }
 .idle .hr-team { color:#18a058; }

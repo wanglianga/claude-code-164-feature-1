@@ -172,7 +172,10 @@ function occupancyBlocks(c: Court, h: string) {
     <div v-for="c in state.courts" :key="c.id" class="court-card">
       <div class="court-head">
         <div>
-          <div class="court-name">{{ c.name }}</div>
+          <div class="court-name">
+            {{ c.name }}
+            <NTag v-if="c.indoor" size="tiny" type="info" round style="margin-left:6px">🏠 室内场馆·雨天可用</NTag>
+          </div>
           <div class="court-sub">{{ c.park }} · 距你 {{ c.distanceM }}m · {{ c.halfCourts }} 个半场</div>
         </div>
         <RiskTag :level="courtRisk(c, state.bookings, state.incidents, nowStr).level"
@@ -181,6 +184,9 @@ function occupancyBlocks(c: Court, h: string) {
 
       <div v-if="c.sealed" class="seal-banner">
         🚧 已封场：{{ c.sealReason }}（R-SEAL-1）
+      </div>
+      <div v-if="c.puddleHalves?.length" class="puddle-banner">
+        🌧️ {{ c.puddleHalves.join(' / ') }} 雨后积水暂停使用，受影响队伍正在改约窗口内安置（退款/顺延/室内/半场拼场），预计恢复时间见现场公示 <RuleLink id="R-WX-3" />
       </div>
 
       <div class="court-tags">
@@ -206,9 +212,10 @@ function occupancyBlocks(c: Court, h: string) {
       <!-- 当前各半场使用情况 -->
       <div class="halves-now">
         <div v-for="h in Object.keys(c.hoops)" :key="h" class="half-chip"
-          :class="{ active: halfCurrent(c, h), disabled: halfSealed(c, h) || c.hoops[h] !== 'normal' }">
+          :class="{ active: halfCurrent(c, h), disabled: halfSealed(c, h) || c.hoops[h] !== 'normal' || c.puddleHalves?.includes(h) }">
           <div class="hc-name">{{ h }}</div>
           <div v-if="halfSealed(c, h)" class="hc-state">封停中</div>
+          <div v-else-if="c.puddleHalves?.includes(h)" class="hc-state puddle">🌧️ 积水暂停</div>
           <div v-else-if="c.hoops[h] !== 'normal'" class="hc-state">不可用</div>
           <div v-else-if="halfCurrent(c, h)" class="hc-state">
             ✅ {{ halfCurrent(c, h)!.teamName }}
@@ -352,6 +359,7 @@ function occupancyBlocks(c: Court, h: string) {
 .court-name { font-weight:800; font-size:15px; }
 .court-sub { font-size:11.5px; color:#909399; margin-top:2px; }
 .seal-banner { background:#fff1f0; color:#cf1322; border-radius:8px; padding:7px 9px; font-size:12.5px; margin:8px 0; font-weight:600; }
+.puddle-banner { background:#fff7e6; color:#ad6800; border:1px solid #ffe7ba; border-radius:8px; padding:7px 9px; font-size:12.5px; margin:8px 0; font-weight:600; line-height:1.7; }
 .court-tags { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }
 .court-info { background:#f7f9fc; border-radius:10px; padding:8px 10px; font-size:12px; color:#444; line-height:1.9; }
 .ci-row b { color:#333; }
